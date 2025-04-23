@@ -21,7 +21,7 @@ DB_PATH = "/data/derelict_restoration.db"
 STATUS_DIR = "/data/status"
 
 # OpenAI API constants
-OPENAI_API_KEY = "sk-proj-jJSSxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+OPENAI_API_KEY = "sk-proj-jxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 OPENAI_VISION_API_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images/generations"
 
@@ -531,22 +531,23 @@ def serve():
         
         # Form with HTMX for submission
         restoration_form = Form(
-            image_upload,
-            restoration_options,
-            Button(
-                "Generate Restoration",
-                cls="btn btn-primary w-full",
-                id="restore-button",
-                disabled="disabled",
-                type="submit"
-            ),
-            id="restoration-form",
-            hx_post="/restore",
-            hx_trigger="submit",
-            hx_target="#results-container",
-            hx_swap="innerHTML",
-            hx_indicator="#loading-container"
-        )
+                image_upload,
+                restoration_options,
+                Button(
+                    "Generate Restoration",
+                    cls="btn btn-primary w-full",
+                    id="restore-button",
+                    disabled="disabled",
+                    type="submit"
+                ),
+                id="restoration-form",
+                hx_post="/restore",
+                hx_trigger="submit",
+                hx_target="#results-container",
+                hx_swap="innerHTML",
+                hx_indicator="#loading-container",
+                hx_on="htmx:beforeRequest: document.getElementById('loading-container').classList.remove('hidden');"
+            )
         
         # Controls panel
         controls_panel = Div(
@@ -563,7 +564,7 @@ def serve():
                     cls="loading-progress mx-auto",
                 ),
                 P("Generating your restoration...", cls="text-center mt-4 text-base-content/70"),
-                cls="flex flex-col justify-center items-center h-32",
+                cls="flex flex-col justify-center items-center h-32 hidden",
                 id="loading-container",
                 hx_swap_oob="true"
             ),
@@ -672,8 +673,36 @@ def serve():
                 });
             }
             
+            // Add form validation before submit
+            function validateForm(event) {
+                // Get the image data input value
+                const imageDataInput = document.getElementById('image-data-input');
+                
+                // Check if image data exists
+                if (!imageDataInput || !imageDataInput.value) {
+                    // Prevent form submission
+                    event.preventDefault();
+                    event.stopPropagation();
+                    
+                    // Show an error message
+                    const resultsContainer = document.getElementById('results-container');
+                    resultsContainer.innerHTML = `
+                        <div class="alert alert-error">
+                            <span>Please upload an image before generating a restoration.</span>
+                        </div>
+                    `;
+                    
+                    return false;
+                }
+                
+                // Show loading indicator and continue with submission
+                document.getElementById('loading-container').classList.remove('hidden');
+                document.getElementById('results-placeholder') && document.getElementById('results-placeholder').classList.add('hidden');
+                return true;
+            }
+            
             // Setup drag and drop for image upload
-            document.addEventListener('DOMContentLoaded', function() {
+            function setupDragAndDrop() {
                 const dropzone = document.getElementById('dropzone');
                 
                 if (dropzone) {
@@ -718,6 +747,36 @@ def serve():
                         }
                     }
                 }
+            }
+            
+            // Initialize app when DOM is loaded
+            document.addEventListener('DOMContentLoaded', function() {
+                // Disable the restore button initially
+                const restoreButton = document.getElementById('restore-button');
+                if (restoreButton) {
+                    restoreButton.disabled = true;
+                }
+                
+                // Ensure the loading container is hidden
+                const loadingContainer = document.getElementById('loading-container');
+                if (loadingContainer) {
+                    loadingContainer.classList.add('hidden');
+                }
+                
+                // Setup the form validation
+                const restorationForm = document.getElementById('restoration-form');
+                if (restorationForm) {
+                    restorationForm.addEventListener('submit', validateForm);
+                }
+                
+                // Setup image input handling
+                const imageInput = document.getElementById('image-input');
+                if (imageInput) {
+                    imageInput.addEventListener('change', showImagePreview);
+                }
+                
+                // Setup drag and drop
+                setupDragAndDrop();
                 
                 // Initialize any existing diff sliders
                 initDiffSlider();
