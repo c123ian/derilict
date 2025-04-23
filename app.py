@@ -12,30 +12,23 @@ from fasthtml.common import *
 from starlette.responses import JSONResponse, HTMLResponse, RedirectResponse
 
 # Define app
-app = modal.App("bee_classifier")
+app = modal.App("derelict_restoration")
 
 # Constants and directories
 DATA_DIR = "/data"
-RESULTS_FOLDER = "/data/classification_results"
-DB_PATH = "/data/bee_classifier.db"
+RESULTS_FOLDER = "/data/restoration_results"
+DB_PATH = "/data/derelict_restoration.db"
 STATUS_DIR = "/data/status"
 
-# Claude API constants
-CLAUDE_API_KEY = "sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
+# OpenAI API constants
+OPENAI_API_KEY = "sk-proj-jJSSxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+OPENAI_VISION_API_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images/generations"
 
-# Insect categories for classification
-INSECT_CATEGORIES = [
-    "Bumblebees", 
-    "Solitary bees",
-    "Honeybee", 
-    "Wasps",
-    "Hoverflies", 
-    "Butterflies & Moths",
-    "Beetles (>3mm)",
-    "Small insects (<3mm)",
-    "Other insects",
-    "Other flies"
+# Restoration types
+RESTORATION_TYPES = [
+    "Home Restoration",
+    "Commercial Restoration"
 ]
 
 # Create custom image with all dependencies
@@ -50,32 +43,49 @@ image = (
 
 # Look up data volume for storing results
 try:
-    bee_volume = modal.Volume.lookup("bee_volume", create_if_missing=True)
+    derelict_volume = modal.Volume.lookup("derelict_volume", create_if_missing=True)
 except modal.exception.NotFoundError:
-    bee_volume = modal.Volume.persisted("bee_volume")
+    derelict_volume = modal.Volume.persisted("derelict_volume")
 
-# Base prompt template for Claude
-CLASSIFICATION_PROMPT = """
-You are an expert entomologist specializing in insect identification. Your task is to analyze the 
-provided image and classify the insect(s) visible. 
+# Base prompt template for OpenAI
+RESTORATION_PROMPT = """
+Create a photorealistic restoration of this derelict building, showing how it would look beautifully renovated and restored. 
+{restoration_type_instructions}
 
-Please categorize the insect into one of these categories:
-{categories}
+Maintain the same architectural style, building position, perspective, and surroundings, but transform the building into a pristine, restored condition.
 
-{additional_instructions}
+Show:
+- Repaired walls with fresh paint or restored original materials
+- New windows and doors
+- Fixed roof
+- Clean and well-maintained exterior
+- Attractive landscaping
+- Appropriate lighting
+- Overall appealing aesthetic that respects the original structure
+"""
 
-Format your response as follows:
-- Main Category: [the most likely category from the list]
-- Confidence: [High, Medium, or Low]
-- Description: [brief description of what you see]
-{format_instructions}
+HOME_INSTRUCTIONS = """
+Style it as a beautiful residential home with:
+- Warm, inviting appearance
+- Residential-appropriate colors and finishes
+- Cozy exterior lighting
+- Home-style landscaping with garden elements
+- Suitable residential details like a mailbox, porch furniture, etc.
+"""
 
-IMPORTANT: Just provide the formatted response above with no additional explanation or apology.
+COMMERCIAL_INSTRUCTIONS = """
+Style it as an attractive commercial building with:
+- Professional, polished appearance
+- Business-appropriate signage (generic/neutral)
+- Commercial-grade windows and doors
+- Professional landscaping
+- Exterior lighting suitable for a business
+- Clean, accessible entrance area
 """
 
 # Function to save results to file
-def save_results_file(result_id, image_data, result_content):
-    """Save classification results to a file"""
+def save_results_file(result_id, original_image, restored_image, result_content):
+    """Save restoration results to a file"""
     os.makedirs(RESULTS_FOLDER, exist_ok=True)
     result_file = os.path.join(RESULTS_FOLDER, f"{result_id}.json")
     result_data = {
@@ -87,15 +97,23 @@ def save_results_file(result_id, image_data, result_content):
     try:
         with open(result_file, "w") as f:
             json.dump(result_data, f)
-        print(f"✅ Saved result file for ID: {result_id}")
+        
+        # Save the original and restored images
+        with open(os.path.join(RESULTS_FOLDER, f"{result_id}_original.jpg"), "wb") as f:
+            f.write(base64.b64decode(original_image))
+        
+        with open(os.path.join(RESULTS_FOLDER, f"{result_id}_restored.jpg"), "wb") as f:
+            f.write(base64.b64decode(restored_image))
+            
+        print(f"✅ Saved result files for ID: {result_id}")
         return True
     except Exception as e:
-        print(f"⚠️ Error saving result file: {e}")
+        print(f"⚠️ Error saving result files: {e}")
         return False
 
-# Setup database for classification results
+# Setup database for restoration results
 def setup_database(db_path: str):
-    """Initialize SQLite database for classification results"""
+    """Initialize SQLite database for restoration results"""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
     conn = sqlite3.connect(db_path, timeout=30.0)
@@ -108,10 +126,10 @@ def setup_database(db_path: str):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS results (
             id TEXT PRIMARY KEY,
-            category TEXT NOT NULL,
-            confidence TEXT NOT NULL,
-            description TEXT NOT NULL,
-            additional_details TEXT,
+            restoration_type TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            original_image_path TEXT NOT NULL,
+            restored_image_path TEXT NOT NULL,
             status TEXT DEFAULT 'generated',
             feedback TEXT DEFAULT NULL, 
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -120,127 +138,154 @@ def setup_database(db_path: str):
     conn.commit()
     return conn
 
-# Generate classification using Claude's API
+# Generate restoration using OpenAI's API
 @app.function(
     image=image,
     cpu=1.0,
     timeout=300,
-    volumes={DATA_DIR: bee_volume}
+    volumes={DATA_DIR: derelict_volume}
 )
-def classify_image_claude(image_data: str, options: Dict[str, bool]) -> Dict[str, Any]:
+def generate_restoration(image_data: str, options: Dict[str, bool]) -> Dict[str, Any]:
     """
-    Classify insect in image using Claude's API based on provided options
+    Generate restored building image using OpenAI's API based on provided options
     
     Args:
         image_data: Base64 encoded image
         options: Dictionary of toggle options
     
     Returns:
-        Dictionary with classification results
+        Dictionary with restoration results
     """
     result_id = uuid.uuid4().hex
     
-    # Build additional instructions based on options
-    additional_instructions = []
-    format_instructions = []
+    # Build prompt based on options
+    restoration_type = "Home Restoration" if options.get("home_restoration", True) else "Commercial Restoration"
     
-    if options.get("detailed_description", False):
-        additional_instructions.append("Provide a detailed description of the insect, focusing on shapes and colors visible in the image.")
-        format_instructions.append("- Detailed Description: [shapes, colors, and distinctive features]")
-        
-    if options.get("plant_classification", False):
-        additional_instructions.append("If there are any plants visible in the image, identify them to the best of your ability.")
-        format_instructions.append("- Plant Identification: [names of visible plants, if any]")
-        
-    if options.get("taxonomy", False):
-        additional_instructions.append("Provide taxonomic classification of the insect to the most specific level possible (Order, Family, Genus, Species).")
-        format_instructions.append("- Taxonomy: [Order, Family, Genus, Species where possible]")
+    # Select the appropriate instructions
+    if restoration_type == "Home Restoration":
+        restoration_type_instructions = HOME_INSTRUCTIONS
+    else:
+        restoration_type_instructions = COMMERCIAL_INSTRUCTIONS
     
-    # Prepare the prompt
-    categories_list = "\n".join([f"- {category}" for category in INSECT_CATEGORIES])
-    additional_instructions_text = "\n".join(additional_instructions) if additional_instructions else ""
-    format_instructions_text = "\n".join(format_instructions) if format_instructions else ""
-    
-    prompt = CLASSIFICATION_PROMPT.format(
-        categories=categories_list,
-        additional_instructions=additional_instructions_text,
-        format_instructions=format_instructions_text
+    # Prepare the full prompt
+    prompt = RESTORATION_PROMPT.format(
+        restoration_type_instructions=restoration_type_instructions
     )
     
-    print("🔍 Sending image to Claude for classification...")
+    print(f"🔍 Sending image to OpenAI for {restoration_type.lower()}...")
     
     try:
-        # Prepare the request for Claude API
-        headers = {
-            "x-api-key": CLAUDE_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
+        # Format the image data properly
+        if "," in image_data:
+            # If it contains a comma, it's likely in the format "data:image/jpeg;base64,/9j/..."
+            # We need to extract just the base64 part
+            image_data_full = image_data
+            image_data = image_data.split(",", 1)[1]
+            
+        print("🔍 Step 1: Analyzing building image with GPT-4V...")
+        
+        # First, use GPT-4V to analyze the building and generate a detailed description
+        vision_headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
         }
         
-        payload = {
-            "model": "claude-3-7-sonnet-20250219",
-            "max_tokens": 1024,
+        vision_payload = {
+            "model": "gpt-4-vision-preview",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert architect specializing in building restoration. Analyze this derelict building image and provide a detailed description of its architectural style, key features, materials, and surroundings. Your description will be used to generate a restoration image."
+                },
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": image_data
-                            }
+                            "type": "text",
+                            "text": "Describe this derelict building in detail. Focus on architectural elements, layout, materials, surroundings, and style. Be specific about features that would need to be restored."
                         },
                         {
-                            "type": "text",
-                            "text": prompt
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_data}"
+                            }
                         }
                     ]
                 }
-            ]
+            ],
+            "max_tokens": 500
         }
         
-        # Make the API call
-        response = requests.post(CLAUDE_API_URL, headers=headers, json=payload)
-        response.raise_for_status()
+        # Make the vision API call
+        vision_response = requests.post(OPENAI_VISION_API_URL, headers=vision_headers, json=vision_payload)
+        vision_response.raise_for_status()
+        
+        # Extract the building description
+        vision_result = vision_response.json()
+        building_description = vision_result["choices"][0]["message"]["content"]
+        
+        print("✅ Building analysis complete")
+        print("🎨 Step 2: Generating restored building image...")
+        
+        # Now, use the building description with the selected restoration style
+        # to create a prompt for DALL-E
+        
+        # Create a detailed prompt combining the building description and restoration type
+        enhanced_prompt = f"""Create a photorealistic image of this restored building:
+
+{building_description}
+
+{prompt}
+
+Important: Maintain the exact same architectural style, building position, perspective, and surroundings as the original building. Only show the transformation from derelict to pristine condition.
+"""
+        
+        # Prepare the DALL-E API request
+        generation_headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        generation_payload = {
+            "model": "dall-e-3",
+            "prompt": enhanced_prompt,
+            "n": 1,
+            "size": "1024x1024",
+            "response_format": "b64_json",
+            "quality": "hd"
+        }
+        
+        # Make the image generation API call
+        generation_response = requests.post(OPENAI_IMAGE_API_URL, headers=generation_headers, json=generation_payload)
+        generation_response.raise_for_status()
         
         # Extract the response content
-        result = response.json()
-        classification_text = result["content"][0]["text"]
+        result = generation_response.json()
+        restored_image_b64 = result["data"][0]["b64_json"]
         
-        # Parse the classification result
-        # Simple parsing based on the expected format
-        lines = classification_text.strip().split("\n")
-        parsed_result = {}
-        
-        for line in lines:
-            if ":" in line:
-                key, value = line.split(":", 1)
-                key = key.strip().replace("- ", "")
-                value = value.strip()
-                parsed_result[key] = value
-        
-        # Store essential information
-        category = parsed_result.get("Main Category", "Unclassified")
-        confidence = parsed_result.get("Confidence", "Low")
-        description = parsed_result.get("Description", "No description provided")
-        
-        # Store the full result in the database
+        # Store the results in the database
         try:
             conn = setup_database(DB_PATH)
             cursor = conn.cursor()
             
+            # Save paths to images
+            original_path = os.path.join(RESULTS_FOLDER, f"{result_id}_original.jpg")
+            restored_path = os.path.join(RESULTS_FOLDER, f"{result_id}_restored.jpg")
+            
             cursor.execute(
-                "INSERT INTO results (id, category, confidence, description, additional_details) VALUES (?, ?, ?, ?, ?)",
-                (result_id, category, confidence, description, json.dumps(parsed_result))
+                "INSERT INTO results (id, restoration_type, prompt, original_image_path, restored_image_path) VALUES (?, ?, ?, ?, ?)",
+                (result_id, restoration_type, prompt, original_path, restored_path)
             )
             
             conn.commit()
             conn.close()
             
             # Save results to file
-            save_results_file(result_id, image_data, parsed_result)
+            save_results_file(result_id, image_data, restored_image_b64, {
+                "restoration_type": restoration_type,
+                "prompt": prompt,
+                "building_description": building_description
+            })
             
         except Exception as e:
             print(f"⚠️ Error saving to database: {e}")
@@ -248,15 +293,15 @@ def classify_image_claude(image_data: str, options: Dict[str, bool]) -> Dict[str
         
         return {
             "id": result_id,
-            "category": category,
-            "confidence": confidence,
-            "description": description,
-            "details": parsed_result,
-            "raw_response": classification_text
+            "restoration_type": restoration_type,
+            "original_image": image_data,
+            "restored_image": restored_image_b64,
+            "prompt": prompt,
+            "building_description": building_description
         }
         
     except Exception as e:
-        print(f"⚠️ Error classifying image: {e}")
+        print(f"⚠️ Error generating restoration: {e}")
         return {
             "error": str(e),
             "id": result_id
@@ -265,13 +310,13 @@ def classify_image_claude(image_data: str, options: Dict[str, bool]) -> Dict[str
 # Main FastHTML Server with defined routes
 @app.function(
     image=image,
-    volumes={DATA_DIR: bee_volume},
+    volumes={DATA_DIR: derelict_volume},
     cpu=1.0,
     timeout=3600
 )
 @modal.asgi_app()
 def serve():
-    """Main FastHTML Server for Bee Classifier Dashboard"""
+    """Main FastHTML Server for Derelict Building Restoration Visualizer"""
     # Set up the FastHTML app with required headers
     fasthtml_app, rt = fast_app(
         hdrs=(
@@ -285,9 +330,9 @@ def serve():
                 --color-base-200: oklch(96% 0.003 264.542);
                 --color-base-300: oklch(92% 0.006 264.531);
                 --color-base-content: oklch(21% 0.034 264.665);
-                --color-primary: oklch(47% 0.266 120.957);  /* Green for bees */
+                --color-primary: oklch(47% 0.266 120.957);  /* Green for sustainability */
                 --color-primary-content: oklch(97% 0.014 254.604);
-                --color-secondary: oklch(74% 0.234 93.635);  /* Yellow for bees */
+                --color-secondary: oklch(74% 0.234 93.635);  /* Yellow for construction */
                 --color-secondary-content: oklch(13% 0.028 261.692);
                 --color-accent: oklch(41% 0.234 41.252);     /* Brown accent */
                 --color-accent-content: oklch(97% 0.014 254.604);
@@ -310,29 +355,96 @@ def serve():
                 }
 
                 /* Custom styling for better contrast */
-                .text-bee-green {
+                .text-restoration-green {
                     color: oklch(47% 0.266 120.957);
                 }
                 
-                .bg-bee-yellow {
+                .bg-restoration-yellow {
                     background-color: oklch(74% 0.234 93.635);
                 }
                 
                 .custom-border {
                     border-color: var(--color-base-300);
                 }
-
-                /* Confidence level colors */
-                .confidence-high {
-                    color: var(--color-success);
+                
+                /* Custom styles for the diff slider */
+                .diff {
+                  position: relative;
+                  display: inline-block;
+                  overflow: hidden;
+                  margin: 0;
+                  width: 100%;
                 }
                 
-                .confidence-medium {
-                    color: var(--color-warning);
+                .diff-item-1,
+                .diff-item-2 {
+                  position: relative;
+                  width: 100%;
+                  height: 100%;
                 }
                 
-                .confidence-low {
-                    color: var(--color-error);
+                .diff-item-1 img,
+                .diff-item-2 img {
+                  width: 100%;
+                  height: 100%;
+                  object-fit: cover;
+                  object-position: left;
+                }
+                
+                .diff-item-2 {
+                  position: absolute;
+                  overflow: hidden;
+                  top: 0;
+                  width: 50%;
+                }
+                
+                .diff-resizer {
+                  position: absolute;
+                  width: 4px;
+                  height: calc(100% - 16px);
+                  top: 8px;
+                  right: calc(50% - 2px);
+                  background-color: white;
+                  box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+                  cursor: col-resize;
+                  z-index: 30;
+                }
+                
+                .diff::before {
+                  content: "Before";
+                  position: absolute;
+                  left: 8px;
+                  top: 8px;
+                  background-color: rgba(255, 255, 255, 0.85);
+                  padding: 4px 8px;
+                  border-radius: 4px;
+                  font-size: 12px;
+                  z-index: 20;
+                }
+                
+                .diff::after {
+                  content: "After";
+                  position: absolute;
+                  right: 8px;
+                  top: 8px;
+                  background-color: rgba(255, 255, 255, 0.85);
+                  padding: 4px 8px;
+                  border-radius: 4px;
+                  font-size: 12px;
+                  z-index: 20;
+                }
+                
+                /* Loading animation */
+                .loading-progress {
+                  width: 120px;
+                  height: 24px;
+                  -webkit-mask: linear-gradient(90deg, #000 70%, #0000 0) left/20% 100%;
+                  background: linear-gradient(#000 0 0) left/0% 100% no-repeat #ddd;
+                  animation: loading-progress-animation 2s infinite steps(6);
+                }
+                
+                @keyframes loading-progress-animation {
+                  100% {background-size: 120% 100%}
                 }
             """),
         )
@@ -342,16 +454,16 @@ def serve():
     setup_database(DB_PATH)
     
     #################################################
-    # Homepage Route - Bee Classifier Dashboard
+    # Homepage Route - Derelict Building Restoration Dashboard
     #################################################
     @rt("/")
     def homepage():
-        """Render the bee classifier dashboard"""
+        """Render the derelict building restoration dashboard"""
         
-        # Image upload section
+        # Image upload section with HTMX to preview the image
         image_upload = Div(
-            Label("Upload Insect Image", cls="block text-xl font-medium mb-2 text-bee-green"),
-            P("Upload an image of an insect to classify it using Claude's vision capabilities.", cls="mb-4"),
+            Label("Upload Derelict Building Image", cls="block text-xl font-medium mb-2 text-restoration-green"),
+            P("Upload an image of a derelict building to visualize how it would look if restored.", cls="mb-4"),
             Div(
                 Label(
                     Div(
@@ -361,12 +473,14 @@ def serve():
                     ),
                     Input(
                         type="file",
-                        name="insect_image",
+                        name="building_image",
                         accept="image/jpeg,image/png",
                         cls="hidden",
-                        id="image-input"
+                        id="image-input",
+                        hx_on="change: showImagePreview(event)"
                     ),
-                    cls="w-full h-40 border-2 border-dashed rounded-lg flex items-center justify-center cursor-pointer hover:bg-base-200 transition-colors"
+                    cls="w-full h-40 border-2 border-dashed rounded-lg flex items-center justify-center cursor-pointer hover:bg-base-200 transition-colors",
+                    id="dropzone"
                 ),
                 cls="mb-6"
             ),
@@ -376,293 +490,263 @@ def serve():
                     src="",
                     cls="max-h-64 mx-auto hidden object-contain rounded-lg border shadow-sm"
                 ),
-                cls="mb-6"
+                cls="mb-6",
+                id="preview-container"
             ),
             cls="mb-8"
         )
         
-        # Create toggle switches for classification options
-        def create_toggle(name, label, checked=False):
-            return Div(
+        # Restoration options with HTMX
+        restoration_options = Div(
+            H3("Restoration Options", cls="text-lg font-semibold mb-4 text-restoration-green"),
+            Div(
                 Label(
                     Input(
-                        type="checkbox",
-                        name=name,
-                        checked="checked" if checked else None,
-                        cls="toggle toggle-primary mr-3"
+                        type="radio",
+                        name="restoration_type",
+                        value="home",
+                        checked="checked",
+                        cls="radio radio-primary mr-3"
                     ),
-                    Span(label),
+                    Span("Home Restoration"),
                     cls="label cursor-pointer justify-start"
                 ),
                 cls="mb-3"
-            )
-        
-        # Classification options
-        classification_options = Div(
-            H3("Classification Options", cls="text-lg font-semibold mb-4 text-bee-green"),
-            create_toggle("detailed_description", "Detailed Description (shapes, colors)"),
-            create_toggle("plant_classification", "Plant Classification"),
-            create_toggle("taxonomy", "Taxonomic Classification"),
+            ),
+            Div(
+                Label(
+                    Input(
+                        type="radio",
+                        name="restoration_type",
+                        value="commercial",
+                        cls="radio radio-primary mr-3"
+                    ),
+                    Span("Commercial Restoration"),
+                    cls="label cursor-pointer justify-start"
+                ),
+                cls="mb-3"
+            ),
             cls="mb-6 p-4 bg-base-200 rounded-lg"
+        )
+        
+        # Form with HTMX for submission
+        restoration_form = Form(
+            image_upload,
+            restoration_options,
+            Button(
+                "Generate Restoration",
+                cls="btn btn-primary w-full",
+                id="restore-button",
+                disabled="disabled",
+                type="submit"
+            ),
+            id="restoration-form",
+            hx_post="/restore",
+            hx_trigger="submit",
+            hx_target="#results-container",
+            hx_swap="innerHTML",
+            hx_indicator="#loading-container"
         )
         
         # Controls panel
         controls_panel = Div(
-            H2("Insect Image Classification", cls="text-xl font-bold mb-4 text-bee-green"),
-            image_upload,
-            classification_options,
-            Button(
-                "Classify Insect",
-                cls="btn btn-primary w-full",
-                id="classify-button",
-                disabled="disabled"
-            ),
+            H2("Derelict Building Restoration", cls="text-xl font-bold mb-4 text-restoration-green"),
+            restoration_form,
             cls="w-full md:w-1/2 bg-base-100 p-6 rounded-lg shadow-lg custom-border border"
         )
         
         # Results panel
         results_panel = Div(
-            H2("Classification Results", cls="text-xl font-bold mb-4 text-bee-green"),
+            H2("Restoration Results", cls="text-xl font-bold mb-4 text-restoration-green"),
             Div(
                 Div(
-                    cls="loading loading-spinner loading-lg text-primary",
-                    id="loading-indicator"
+                    cls="loading-progress mx-auto",
                 ),
-                cls="flex justify-center items-center h-32 hidden"
+                P("Generating your restoration...", cls="text-center mt-4 text-base-content/70"),
+                cls="flex flex-col justify-center items-center h-32",
+                id="loading-container",
+                hx_swap_oob="true"
             ),
             Div(
-                P("Upload an image and click 'Classify Insect' to see results.", 
+                P("Upload an image and click 'Generate Restoration' to see results.", 
                   cls="text-center text-base-content/70 italic"),
                 id="results-placeholder",
                 cls="text-center py-12"
             ),
             Div(
-                id="results-content",
-                cls="hidden"
-            ),
-            Div(
-                Button(
-                    "Copy Results",
-                    cls="btn btn-outline btn-accent btn-sm mr-2",
-                    id="copy-button"
-                ),
-                Button(
-                    "New Classification",
-                    cls="btn btn-outline btn-primary btn-sm",
-                    id="new-button"
-                ),
-                cls="mt-6 flex justify-end items-center gap-2 hidden",
-                id="result-actions"
+                id="results-container",
+                cls="w-full"
             ),
             cls="w-full md:w-1/2 bg-base-100 p-6 rounded-lg shadow-lg custom-border border"
         )
         
-        # Add script for form handling
-        form_script = Script("""
-        document.addEventListener('DOMContentLoaded', function() {
-            const imageInput = document.getElementById('image-input');
-            const imagePreview = document.getElementById('image-preview');
-            const classifyButton = document.getElementById('classify-button');
-            const loadingIndicator = document.getElementById('loading-indicator');
-            const resultPlaceholder = document.getElementById('results-placeholder');
-            const resultsContent = document.getElementById('results-content');
-            const resultActions = document.getElementById('result-actions');
-            const copyButton = document.getElementById('copy-button');
-            const newButton = document.getElementById('new-button');
-            
-            // Handle image upload
-            imageInput.addEventListener('change', function(event) {
+        # Add minimal JavaScript for image preview and diff slider
+        js_script = Script("""
+            // Image preview function
+            function showImagePreview(event) {
                 const file = event.target.files[0];
                 if (file) {
                     const reader = new FileReader();
-                    
                     reader.onload = function(e) {
-                        // Show image preview
-                        imagePreview.src = e.target.result;
-                        imagePreview.classList.remove('hidden');
+                        const preview = document.getElementById('image-preview');
+                        preview.src = e.target.result;
+                        preview.classList.remove('hidden');
                         
-                        // Enable classify button
-                        classifyButton.disabled = false;
+                        // Enable the restore button
+                        document.getElementById('restore-button').disabled = false;
+                        
+                        // Store the image data in a hidden input for submission
+                        let imageDataInput = document.getElementById('image-data-input');
+                        if (!imageDataInput) {
+                            imageDataInput = document.createElement('input');
+                            imageDataInput.type = 'hidden';
+                            imageDataInput.name = 'image_data';
+                            imageDataInput.id = 'image-data-input';
+                            document.getElementById('restoration-form').appendChild(imageDataInput);
+                        }
+                        imageDataInput.value = e.target.result;
                     };
-                    
                     reader.readAsDataURL(file);
                 }
-            });
+            }
             
-            // Handle classify button click
-            classifyButton.addEventListener('click', function() {
-                // Get the base64 image data (remove metadata)
-                const base64Data = imagePreview.src.split(',')[1];
+            // Initialize diff slider 
+            function initDiffSlider() {
+                const sliders = document.querySelectorAll('.diff');
                 
-                // Get toggle states
-                const options = {
-                    detailed_description: document.querySelector('input[name="detailed_description"]').checked,
-                    plant_classification: document.querySelector('input[name="plant_classification"]').checked,
-                    taxonomy: document.querySelector('input[name="taxonomy"]').checked
-                };
-                
-                // Show loading indicator
-                loadingIndicator.parentElement.classList.remove('hidden');
-                resultPlaceholder.classList.add('hidden');
-                resultsContent.classList.add('hidden');
-                resultActions.classList.add('hidden');
-                classifyButton.disabled = true;
-                
-                // Send request to API
-                fetch('/classify', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        image_data: base64Data,
-                        options: options
-                    })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    // Hide loading indicator
-                    loadingIndicator.parentElement.classList.add('hidden');
+                sliders.forEach(slider => {
+                    const resizer = slider.querySelector('.diff-resizer');
+                    const item2 = slider.querySelector('.diff-item-2');
                     
-                    if (data.error) {
-                        // Show error message
-                        resultsContent.innerHTML = `
-                            <div class="alert alert-error">
-                                <span>Error: ${data.error}</span>
-                            </div>
-                        `;
-                        resultsContent.classList.remove('hidden');
-                        return;
+                    if (!resizer || !item2) return;
+                    
+                    let isResizing = false;
+                    
+                    // Mouse events
+                    resizer.addEventListener('mousedown', function(e) {
+                        isResizing = true;
+                        e.preventDefault();
+                    });
+                    
+                    document.addEventListener('mousemove', function(e) {
+                        if (!isResizing) return;
+                        
+                        const rect = slider.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const percent = (x / rect.width) * 100;
+                        
+                        // Limit between 5% and 95%
+                        const limitedPercent = Math.min(Math.max(percent, 5), 95);
+                        
+                        item2.style.width = limitedPercent + '%';
+                        resizer.style.right = (100 - limitedPercent) + '%';
+                    });
+                    
+                    document.addEventListener('mouseup', function() {
+                        isResizing = false;
+                    });
+                    
+                    // Touch events for mobile
+                    resizer.addEventListener('touchstart', function(e) {
+                        isResizing = true;
+                    });
+                    
+                    document.addEventListener('touchmove', function(e) {
+                        if (!isResizing) return;
+                        
+                        const touch = e.touches[0];
+                        const rect = slider.getBoundingClientRect();
+                        const x = touch.clientX - rect.left;
+                        const percent = (x / rect.width) * 100;
+                        
+                        // Limit between 5% and 95%
+                        const limitedPercent = Math.min(Math.max(percent, 5), 95);
+                        
+                        item2.style.width = limitedPercent + '%';
+                        resizer.style.right = (100 - limitedPercent) + '%';
+                    });
+                    
+                    document.addEventListener('touchend', function() {
+                        isResizing = false;
+                    });
+                });
+            }
+            
+            // Setup drag and drop for image upload
+            document.addEventListener('DOMContentLoaded', function() {
+                const dropzone = document.getElementById('dropzone');
+                
+                if (dropzone) {
+                    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                        dropzone.addEventListener(eventName, preventDefaults, false);
+                    });
+                    
+                    function preventDefaults(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
                     }
                     
-                    // Determine confidence class
-                    let confidenceClass = 'confidence-medium';
-                    if (data.confidence === 'High') {
-                        confidenceClass = 'confidence-high';
-                    } else if (data.confidence === 'Low') {
-                        confidenceClass = 'confidence-low';
+                    ['dragenter', 'dragover'].forEach(eventName => {
+                        dropzone.addEventListener(eventName, highlight, false);
+                    });
+                    
+                    ['dragleave', 'drop'].forEach(eventName => {
+                        dropzone.addEventListener(eventName, unhighlight, false);
+                    });
+                    
+                    function highlight() {
+                        dropzone.classList.add('bg-base-200');
                     }
                     
-                    // Create result HTML
-                    let resultHTML = `
-                        <div class="p-4 bg-base-200 rounded-lg mb-4">
-                            <div class="flex justify-between items-center mb-2">
-                                <h3 class="text-lg font-bold">${data.category}</h3>
-                                <span class="badge ${confidenceClass}">Confidence: ${data.confidence}</span>
-                            </div>
-                            <p class="mb-4">${data.description}</p>
-                    `;
+                    function unhighlight() {
+                        dropzone.classList.remove('bg-base-200');
+                    }
                     
-                    // Add additional details if available
-                    const details = data.details;
-                    for (const key in details) {
-                        if (key !== 'Main Category' && key !== 'Confidence' && key !== 'Description') {
-                            resultHTML += `
-                                <div class="mb-2">
-                                    <span class="font-semibold">${key}:</span>
-                                    <span>${details[key]}</span>
-                                </div>
-                            `;
+                    dropzone.addEventListener('drop', handleDrop, false);
+                    
+                    function handleDrop(e) {
+                        const dt = e.dataTransfer;
+                        const files = dt.files;
+                        
+                        if (files.length > 0) {
+                            const fileInput = document.getElementById('image-input');
+                            fileInput.files = files;
+                            
+                            // Trigger the change event to show preview
+                            const event = new Event('change');
+                            fileInput.dispatchEvent(event);
                         }
                     }
-                    
-                    resultHTML += `</div>`;
-                    
-                    // Add raw response in collapsible section
-                    resultHTML += `
-                        <details class="collapse bg-base-200">
-                            <summary class="collapse-title font-medium">Raw Response</summary>
-                            <div class="collapse-content">
-                                <pre class="text-xs whitespace-pre-wrap">${data.raw_response}</pre>
-                            </div>
-                        </details>
-                    `;
-                    
-                    // Update results content
-                    resultsContent.innerHTML = resultHTML;
-                    resultsContent.classList.remove('hidden');
-                    resultActions.classList.remove('hidden');
-                    
-                    // Setup copy button
-                    copyButton.onclick = function() {
-                        navigator.clipboard.writeText(data.raw_response);
-                        copyButton.innerText = "Copied!";
-                        setTimeout(() => copyButton.innerText = "Copy Results", 2000);
-                    };
-                    
-                    // Setup new button
-                    newButton.onclick = function() {
-                        // Reset the form
-                        imageInput.value = '';
-                        imagePreview.src = '';
-                        imagePreview.classList.add('hidden');
-                        classifyButton.disabled = true;
-                        resultPlaceholder.classList.remove('hidden');
-                        resultsContent.classList.add('hidden');
-                        resultActions.classList.add('hidden');
-                    };
-                })
-                .catch(error => {
-                    console.error('Error classifying image:', error);
-                    loadingIndicator.parentElement.classList.add('hidden');
-                    resultsContent.innerHTML = `
-                        <div class="alert alert-error">
-                            <span>Error: Could not process your request. Please try again.</span>
-                        </div>
-                    `;
-                    resultsContent.classList.remove('hidden');
-                    classifyButton.disabled = false;
-                });
-            });
-            
-            // Make the label act as a dropzone
-            const dropzone = document.querySelector('label[for="image-input"]');
-            
-            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                dropzone.addEventListener(eventName, preventDefaults, false);
-            });
-            
-            function preventDefaults(e) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-            
-            ['dragenter', 'dragover'].forEach(eventName => {
-                dropzone.addEventListener(eventName, highlight, false);
-            });
-            
-            ['dragleave', 'drop'].forEach(eventName => {
-                dropzone.addEventListener(eventName, unhighlight, false);
-            });
-            
-            function highlight() {
-                dropzone.classList.add('bg-base-200');
-            }
-            
-            function unhighlight() {
-                dropzone.classList.remove('bg-base-200');
-            }
-            
-            dropzone.addEventListener('drop', handleDrop, false);
-            
-            function handleDrop(e) {
-                const dt = e.dataTransfer;
-                const files = dt.files;
-                
-                if (files.length > 0) {
-                    imageInput.files = files;
-                    const event = new Event('change');
-                    imageInput.dispatchEvent(event);
                 }
-            }
-        });
+                
+                // Initialize any existing diff sliders
+                initDiffSlider();
+                
+                // Setup a MutationObserver to initialize diff sliders that get added to the DOM
+                const observer = new MutationObserver(function(mutations) {
+                    mutations.forEach(function(mutation) {
+                        if (mutation.type === 'childList' && mutation.addedNodes.length) {
+                            mutation.addedNodes.forEach(function(node) {
+                                if (node.nodeType === 1 && node.querySelector) {
+                                    const newSliders = node.querySelectorAll('.diff');
+                                    if (newSliders.length) {
+                                        setTimeout(initDiffSlider, 100); // Small delay to ensure DOM is ready
+                                    }
+                                }
+                            });
+                        }
+                    });
+                });
+                
+                observer.observe(document.body, { childList: true, subtree: true });
+            });
         """)
         
-        return Title("Insect Classifier"), Main(
-            form_script,
+        return Title("Derelict Building Restoration"), Main(
+            js_script,
             Div(
-                H1("Insect Classification App", cls="text-3xl font-bold text-center mb-2 text-bee-green"),
-                P("Powered by Claude's Vision AI", cls="text-center mb-8 text-base-content/70"),
+                H1("Derelict Building Restoration Visualizer", cls="text-3xl font-bold text-center mb-2 text-restoration-green"),
+                P("Powered by OpenAI's Image Generation", cls="text-center mb-8 text-base-content/70"),
                 Div(
                     controls_panel,
                     results_panel,
@@ -675,31 +759,93 @@ def serve():
         )
     
     #################################################
-    # Classify API Endpoint
+    # Restoration API Endpoint (HTMX Compatible)
     #################################################
-    @rt("/classify", methods=["POST"])
-    async def api_classify_image(request):
-        """API endpoint to classify insect image using Claude"""
+    @rt("/restore", methods=["POST"])
+    async def api_restore_image(request):
+        """API endpoint to generate restored building using OpenAI"""
         try:
-            # Get image data and options from request JSON
-            data = await request.json()
-            image_data = data.get("image_data", "")
-            options = data.get("options", {})
+            # Get form data
+            form_data = await request.form()
+            image_data = form_data.get("image_data", "")
+            restoration_type = form_data.get("restoration_type", "home")
             
+            # Check if we have image data
             if not image_data:
-                return JSONResponse({"error": "No image data provided"}, status_code=400)
+                return HTMLResponse("""
+                    <div class="alert alert-error">
+                        <span>Error: No image data provided</span>
+                    </div>
+                """)
             
-            # Call the classification function
-            result = classify_image_claude.remote(image_data, options)
+            # Set up options
+            options = {
+                "home_restoration": restoration_type == "home",
+                "commercial_restoration": restoration_type == "commercial"
+            }
             
-            return JSONResponse(result)
+            # Generate restoration
+            result = generate_restoration.remote(image_data, options)
+            
+            # If there's an error
+            if "error" in result:
+                return HTMLResponse(f"""
+                    <div class="alert alert-error">
+                        <span>Error: {result["error"]}</span>
+                    </div>
+                """)
+            
+            # Create the result HTML with the diff slider
+            restoration_html = f"""
+                <div class="mb-6">
+                    <div class="diff aspect-16/9 rounded-lg shadow-lg" tabindex="0">
+                        <div class="diff-item-1" role="img" tabindex="0">
+                            <img alt="Original building" src="data:image/jpeg;base64,{result['original_image']}" />
+                        </div>
+                        <div class="diff-item-2" role="img">
+                            <img alt="Restored building" src="data:image/jpeg;base64,{result['restored_image']}" />
+                        </div>
+                        <div class="diff-resizer"></div>
+                    </div>
+                </div>
+                
+                <div class="p-4 bg-base-200 rounded-lg mb-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-lg font-bold">Restoration Type</h3>
+                        <span class="badge badge-primary">{result['restoration_type']}</span>
+                    </div>
+                    <div class="mt-4">
+                        <span class="font-semibold">Building Description:</span>
+                        <p class="mt-2 text-sm">{result['building_description']}</p>
+                    </div>
+                </div>
+                
+                <div class="mt-6 flex justify-end items-center gap-2">
+                    <a class="btn btn-outline btn-accent btn-sm" 
+                       href="data:image/jpeg;base64,{result['restored_image']}" 
+                       download="restored-building.jpg">
+                        Download Restored Image
+                    </a>
+                    <button class="btn btn-outline btn-primary btn-sm"
+                            hx-get="/"
+                            hx-push-url="true">
+                        New Restoration
+                    </button>
+                </div>
+            """
+            
+            return HTMLResponse(restoration_html)
                 
         except Exception as e:
-            print(f"Error classifying image: {e}")
-            return JSONResponse({"error": str(e)}, status_code=500)
+            print(f"Error generating restoration: {e}")
+            return HTMLResponse(f"""
+                <div class="alert alert-error">
+                    <span>Error: {str(e)}</span>
+                </div>
+            """)
     
     # Return the FastHTML app
     return fasthtml_app
 
 if __name__ == "__main__":
-    print("Starting Insect Classification App...")
+    print("Starting Derilict App...")
