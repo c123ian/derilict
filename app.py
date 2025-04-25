@@ -6,6 +6,8 @@ import time
 import json
 import base64
 import requests
+import io
+from PIL import Image
 from typing import Optional, Dict, Any, List
 
 from fasthtml.common import *
@@ -21,9 +23,9 @@ DB_PATH = "/data/derelict_restoration.db"
 STATUS_DIR = "/data/status"
 
 # OpenAI API constants
-OPENAI_API_KEY = "sk-proj-jxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+OPENAI_API_KEY = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
-OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images/generations"
+OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images/edits"  # Using edits endpoint
 
 # Restoration types
 RESTORATION_TYPES = [
@@ -37,7 +39,8 @@ image = (
     .apt_install("git")
     .pip_install(
         "requests",
-        "python-fasthtml==0.12.0"
+        "python-fasthtml==0.12.0",
+        "Pillow"  # Added for image processing
     )
 )
 
@@ -82,6 +85,18 @@ Style it as an attractive commercial building with:
 - Exterior lighting suitable for a business
 - Clean, accessible entrance area
 """
+
+# Helper function to create a transparent mask for image editing
+def create_transparent_mask(width, height):
+    """Create a transparent PNG mask of the specified dimensions"""
+    # Create a completely transparent image
+    mask = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    
+    # Save to a bytes buffer
+    buffer = io.BytesIO()
+    mask.save(buffer, format='PNG')
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # Function to save results to file
 def save_results_file(result_id, original_image, restored_image, result_content):
@@ -138,6 +153,34 @@ def setup_database(db_path: str):
     conn.commit()
     return conn
 
+# Fallback to image generation if editing fails
+def fallback_to_image_generation(image_data, building_description, enhanced_prompt):
+    """Fallback to using DALL-E 3 image generation if editing fails"""
+    print("⚠️ Image editing failed, falling back to image generation...")
+    
+    generation_url = "https://api.openai.com/v1/images/generations"
+    generation_headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    generation_payload = {
+        "model": "dall-e-3",
+        "prompt": enhanced_prompt,
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "b64_json",
+        "quality": "hd"
+    }
+    
+    # Make the image generation API call
+    generation_response = requests.post(generation_url, headers=generation_headers, json=generation_payload)
+    generation_response.raise_for_status()
+    
+    # Extract the response content
+    result = generation_response.json()
+    return result["data"][0]["b64_json"]
+
 # Generate restoration using OpenAI's API
 @app.function(
     image=image,
@@ -185,7 +228,6 @@ def generate_restoration(image_data: str, options: Dict[str, bool]) -> Dict[str,
         print("🔍 Step 1: Analyzing building image with GPT-4V...")
         
         # First, use GPT-4V to analyze the building and generate a detailed description
-        # Using the new /v1/responses endpoint instead of the deprecated /v1/chat/completions
         vision_headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
@@ -230,43 +272,78 @@ def generate_restoration(image_data: str, options: Dict[str, bool]) -> Dict[str,
             raise ValueError("Failed to get building description from the vision model")
         
         print("✅ Building analysis complete")
-        print("🎨 Step 2: Generating restored building image...")
+        print("🎨 Step 2: Generating restored building image using image editing...")
         
-        # Now, use the building description with the selected restoration style
-        # to create a prompt for DALL-E
-        
-        # Create a detailed prompt combining the building description and restoration type
-        enhanced_prompt = f"""Create a photorealistic image of this restored building:
+        # Now create a specific prompt for image editing
+        # The edit prompt should focus on restoration while maintaining the structure
+        enhanced_prompt = f"""Edit this image to show this derelict building fully restored.
 
 {building_description}
 
-{prompt}
+Restoration type: {restoration_type}
 
-Important: Maintain the exact same architectural style, building position, perspective, and surroundings as the original building. Only show the transformation from derelict to pristine condition.
+Make these specific changes to restore the building:
+- Repair all damaged walls and surfaces with appropriate materials
+- Replace broken windows with clean, new ones
+- Fix the roof completely
+- Restore/replace damaged doors
+- Clean up and restore all exterior architectural details
+- Add appropriate landscaping around the building
+- Remove debris, graffiti, and signs of neglect
+- Add appropriate lighting features
+
+{restoration_type_instructions}
+
+IMPORTANT: Maintain the EXACT SAME building structure, position, perspective, and location. Only transform it from derelict to restored condition - do not change the architectural style or fundamental structure.
 """
         
-        # Prepare the DALL-E API request
+        # Decode the base64 image for multipart form submission
+        image_binary = base64.b64decode(image_data)
+        
+        # Create a transparent mask for the edit
+        mask_binary = create_transparent_mask(1024, 1024)
+        
+        # Set up the multipart form data for the edit API
+        files = {
+            'image': ('image.jpg', image_binary, 'image/jpeg'),
+            'mask': ('mask.png', mask_binary, 'image/png')
+        }
+        
+        data = {
+            'model': 'gpt-image-1',  # Use gpt-image-1 for better editing capabilities
+            'prompt': enhanced_prompt,
+            'n': 1,
+            'size': '1024x1024',
+            'response_format': 'b64_json'
+        }
+        
+        # Make the image edit API call using multipart form data
         generation_headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {OPENAI_API_KEY}"
         }
         
-        generation_payload = {
-            "model": "dall-e-3",
-            "prompt": enhanced_prompt,
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "b64_json",
-            "quality": "hd"
-        }
+        print("📤 Sending image edit request to OpenAI...")
+        try:
+            generation_response = requests.post(
+                OPENAI_IMAGE_API_URL, 
+                headers=generation_headers, 
+                files=files,
+                data=data
+            )
+            generation_response.raise_for_status()
+            
+            # Extract the response content
+            result = generation_response.json()
+            restored_image_b64 = result["data"][0]["b64_json"]
+            
+        except Exception as edit_error:
+            print(f"⚠️ Image editing failed: {edit_error}")
+            print("Falling back to image generation...")
+            
+            # Try falling back to image generation
+            restored_image_b64 = fallback_to_image_generation(image_data, building_description, enhanced_prompt)
         
-        # Make the image generation API call
-        generation_response = requests.post(OPENAI_IMAGE_API_URL, headers=generation_headers, json=generation_payload)
-        generation_response.raise_for_status()
-        
-        # Extract the response content
-        result = generation_response.json()
-        restored_image_b64 = result["data"][0]["b64_json"]
+        print("✅ Successfully generated restored image")
         
         # Store the results in the database
         try:
@@ -279,7 +356,7 @@ Important: Maintain the exact same architectural style, building position, persp
             
             cursor.execute(
                 "INSERT INTO results (id, restoration_type, prompt, original_image_path, restored_image_path) VALUES (?, ?, ?, ?, ?)",
-                (result_id, restoration_type, prompt, original_path, restored_path)
+                (result_id, restoration_type, enhanced_prompt, original_path, restored_path)
             )
             
             conn.commit()
@@ -288,7 +365,7 @@ Important: Maintain the exact same architectural style, building position, persp
             # Save results to file
             save_results_file(result_id, image_data, restored_image_b64, {
                 "restoration_type": restoration_type,
-                "prompt": prompt,
+                "prompt": enhanced_prompt,
                 "building_description": building_description
             })
             
@@ -301,7 +378,7 @@ Important: Maintain the exact same architectural style, building position, persp
             "restoration_type": restoration_type,
             "original_image": image_data,
             "restored_image": restored_image_b64,
-            "prompt": prompt,
+            "prompt": enhanced_prompt,
             "building_description": building_description
         }
         
