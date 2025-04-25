@@ -22,7 +22,7 @@ STATUS_DIR = "/data/status"
 
 # OpenAI API constants
 OPENAI_API_KEY = "sk-proj-jxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-OPENAI_VISION_API_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images/generations"
 
 # Restoration types
@@ -185,13 +185,15 @@ def generate_restoration(image_data: str, options: Dict[str, bool]) -> Dict[str,
         print("🔍 Step 1: Analyzing building image with GPT-4V...")
         
         # First, use GPT-4V to analyze the building and generate a detailed description
+        # Using the new /v1/responses endpoint instead of the deprecated /v1/chat/completions
         vision_headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
         }
         
+        # Use the chat completions API with gpt-4o for image analysis
         vision_payload = {
-            "model": "gpt-4-vision-preview",
+            "model": "gpt-4o",
             "messages": [
                 {
                     "role": "system",
@@ -217,12 +219,15 @@ def generate_restoration(image_data: str, options: Dict[str, bool]) -> Dict[str,
         }
         
         # Make the vision API call
-        vision_response = requests.post(OPENAI_VISION_API_URL, headers=vision_headers, json=vision_payload)
+        vision_response = requests.post(OPENAI_CHAT_COMPLETIONS_URL, headers=vision_headers, json=vision_payload)
         vision_response.raise_for_status()
         
         # Extract the building description
         vision_result = vision_response.json()
         building_description = vision_result["choices"][0]["message"]["content"]
+        
+        if not building_description:
+            raise ValueError("Failed to get building description from the vision model")
         
         print("✅ Building analysis complete")
         print("🎨 Step 2: Generating restored building image...")
@@ -907,4 +912,4 @@ def serve():
     return fasthtml_app
 
 if __name__ == "__main__":
-    print("Starting Derilict App...")
+    print("Starting Derelict App...")
