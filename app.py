@@ -23,7 +23,7 @@ DB_PATH = "/data/derelict_restoration.db"
 STATUS_DIR = "/data/status"
 
 # OpenAI API constants
-OPENAI_API_KEY = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+OPENAI_API_KEY = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images/edits"  # Using edits endpoint
 
@@ -86,11 +86,16 @@ Style it as an attractive commercial building with:
 - Clean, accessible entrance area
 """
 
-# Helper function to create a transparent mask for image editing
-def create_transparent_mask(width, height):
-    """Create a transparent PNG mask of the specified dimensions"""
-    # Create a completely transparent image
-    mask = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+# Helper function to create a proper mask for image editing
+def create_mask_with_alpha(width, height):
+    """Create a mask with alpha channel suitable for GPT Image editing
+    
+    For GPT Image edits, the mask should be white where you want changes
+    and transparent where you want to preserve the original image.
+    """
+    # Create a white image with alpha channel
+    # White areas (255, 255, 255, 255) indicate areas to edit
+    mask = Image.new('RGBA', (width, height), (255, 255, 255, 128))
     
     # Save to a bytes buffer
     buffer = io.BytesIO()
@@ -153,34 +158,6 @@ def setup_database(db_path: str):
     conn.commit()
     return conn
 
-# Fallback to image generation if editing fails
-def fallback_to_image_generation(image_data, building_description, enhanced_prompt):
-    """Fallback to using DALL-E 3 image generation if editing fails"""
-    print("⚠️ Image editing failed, falling back to image generation...")
-    
-    generation_url = "https://api.openai.com/v1/images/generations"
-    generation_headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    generation_payload = {
-        "model": "dall-e-3",
-        "prompt": enhanced_prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "b64_json",
-        "quality": "hd"
-    }
-    
-    # Make the image generation API call
-    generation_response = requests.post(generation_url, headers=generation_headers, json=generation_payload)
-    generation_response.raise_for_status()
-    
-    # Extract the response content
-    result = generation_response.json()
-    return result["data"][0]["b64_json"]
-
 # Generate restoration using OpenAI's API
 @app.function(
     image=image,
@@ -190,7 +167,7 @@ def fallback_to_image_generation(image_data, building_description, enhanced_prom
 )
 def generate_restoration(image_data: str, options: Dict[str, bool]) -> Dict[str, Any]:
     """
-    Generate restored building image using OpenAI's API based on provided options
+    Generate restored building image using OpenAI's GPT Image API based on provided options
     
     Args:
         image_data: Base64 encoded image
@@ -272,7 +249,7 @@ def generate_restoration(image_data: str, options: Dict[str, bool]) -> Dict[str,
             raise ValueError("Failed to get building description from the vision model")
         
         print("✅ Building analysis complete")
-        print("🎨 Step 2: Generating restored building image using image editing...")
+        print("🎨 Step 2: Generating restored building image using GPT Image...")
         
         # Now create a specific prompt for image editing
         # The edit prompt should focus on restoration while maintaining the structure
@@ -300,21 +277,32 @@ IMPORTANT: Maintain the EXACT SAME building structure, position, perspective, an
         # Decode the base64 image for multipart form submission
         image_binary = base64.b64decode(image_data)
         
-        # Create a transparent mask for the edit
-        mask_binary = create_transparent_mask(1024, 1024)
+        # Prepare the image for processing
+        img = Image.open(io.BytesIO(image_binary))
         
-        # Set up the multipart form data for the edit API
+        # Resize image to ensure it meets API requirements (max 4MB)
+        max_dimension = 1024
+        if img.width > max_dimension or img.height > max_dimension:
+            img.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
+        
+        # Save processed image to buffer
+        img_buffer = io.BytesIO()
+        img.save(img_buffer, format="PNG")
+        img_buffer.seek(0)
+        processed_image = img_buffer.getvalue()
+        
+        # Create a proper mask for GPT Image editing
+        mask_binary = create_mask_with_alpha(img.width, img.height)
+        
+        # Set up the multipart form data for the edit API - using form fields correctly
         files = {
-            'image': ('image.jpg', image_binary, 'image/jpeg'),
-            'mask': ('mask.png', mask_binary, 'image/png')
-        }
-        
-        data = {
-            'model': 'gpt-image-1',  # Use gpt-image-1 for better editing capabilities
-            'prompt': enhanced_prompt,
-            'n': 1,
-            'size': '1024x1024',
-            'response_format': 'b64_json'
+            'image': ('image.png', processed_image, 'image/png'),
+            'mask': ('mask.png', mask_binary, 'image/png'),
+            'prompt': (None, enhanced_prompt),
+            'model': (None, 'gpt-image-1'),
+            'n': (None, '1'),
+            'size': (None, '1024x1024'),
+            'quality': (None, 'high')
         }
         
         # Make the image edit API call using multipart form data
@@ -322,28 +310,42 @@ IMPORTANT: Maintain the EXACT SAME building structure, position, perspective, an
             "Authorization": f"Bearer {OPENAI_API_KEY}"
         }
         
-        print("📤 Sending image edit request to OpenAI...")
+        print("📤 Sending image edit request to OpenAI GPT Image...")
+        
         try:
+            print("📤 Sending properly formatted image edit request to GPT Image...")
+            
+            # Make the API request - notice we don't need the data parameter anymore
+            # since we included all parameters in the files dictionary
             generation_response = requests.post(
                 OPENAI_IMAGE_API_URL, 
                 headers=generation_headers, 
-                files=files,
-                data=data
+                files=files
             )
-            generation_response.raise_for_status()
+            
+            # Check for HTTP errors and provide detailed information if available
+            if generation_response.status_code != 200:
+                error_message = f"HTTP {generation_response.status_code}"
+                try:
+                    error_json = generation_response.json()
+                    if "error" in error_json:
+                        error_message += f": {error_json['error']['message']}"
+                except:
+                    error_message += f": {generation_response.text[:200]}"
+                
+                print(f"⚠️ GPT Image API error: {error_message}")
+                raise ValueError(f"GPT Image API error: {error_message}")
             
             # Extract the response content
             result = generation_response.json()
             restored_image_b64 = result["data"][0]["b64_json"]
             
         except Exception as edit_error:
-            print(f"⚠️ Image editing failed: {edit_error}")
-            print("Falling back to image generation...")
-            
-            # Try falling back to image generation
-            restored_image_b64 = fallback_to_image_generation(image_data, building_description, enhanced_prompt)
+            print(f"⚠️ GPT Image editing failed: {edit_error}")
+            # No fallback - we're only using GPT Image as requested
+            raise ValueError(f"GPT Image editing failed: {edit_error}. No fallback to DALL-E will be attempted as requested.")
         
-        print("✅ Successfully generated restored image")
+        print("✅ Successfully generated restored image with GPT Image")
         
         # Store the results in the database
         try:
@@ -887,7 +889,7 @@ def serve():
             js_script,
             Div(
                 H1("Derelict Building Restoration Visualizer", cls="text-3xl font-bold text-center mb-2 text-restoration-green"),
-                P("Powered by OpenAI's Image Generation", cls="text-center mb-8 text-base-content/70"),
+                P("Powered by OpenAI's GPT Image", cls="text-center mb-8 text-base-content/70"),
                 Div(
                     controls_panel,
                     results_panel,
@@ -939,6 +941,7 @@ def serve():
             # Create the result HTML with the diff slider
             restoration_html = f"""
                 <div class="mb-6">
+                    <h3 class="text-lg font-semibold mb-2 text-restoration-green">Restoration Preview (Slide to Compare)</h3>
                     <div class="diff aspect-16/9 rounded-lg shadow-lg" tabindex="0">
                         <div class="diff-item-1" role="img" tabindex="0">
                             <img alt="Original building" src="data:image/jpeg;base64,{result['original_image']}" />
@@ -948,6 +951,7 @@ def serve():
                         </div>
                         <div class="diff-resizer"></div>
                     </div>
+                    <p class="text-xs text-center mt-2 text-base-content/70">Powered by GPT Image - Slide to compare before and after</p>
                 </div>
                 
                 <div class="p-4 bg-base-200 rounded-lg mb-4">
