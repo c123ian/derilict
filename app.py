@@ -1,9 +1,13 @@
 import os
 import uuid
 import time
+import requests
+import base64
 from dotenv import load_dotenv
-from openai import AzureOpenAI  # Updated import
+from azure.ai.inference import ChatCompletionsClient
+from azure.core.credentials import AzureKeyCredential
 from fasthtml.common import *
+
 
 # Load environment variables
 load_dotenv()
@@ -35,7 +39,7 @@ Make the surrounding area clean and well-maintained.
 The result should look like a professional architectural visualization of the restored building.
 """
 
-# Function to analyze building with updated OpenAI client
+# Function to analyze building
 def analyze_building_with_azure(image_data: str) -> str:
     try:
         image_hash = hash(image_data[:100])
@@ -43,26 +47,22 @@ def analyze_building_with_azure(image_data: str) -> str:
             print("✅ Using cached building analysis")
             return analysis_cache[image_hash]
 
-        # Updated credential handling for OpenAI 1.x
         azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
         azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4-vision")
-        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
+        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 
         if not azure_api_key or not azure_endpoint:
             print("⚠️ Azure OpenAI credentials not found")
             return "Modern building with standard architectural features requiring restoration."
 
-        print(f"🔍 Connecting to Azure OpenAI: {azure_endpoint} (deployment: {azure_deployment})")
+        print(f"🔍 Connecting to Azure AI Inference: {azure_endpoint} (deployment: {azure_deployment})")
 
-        # Initialize client using OpenAI 1.x pattern
-        client = AzureOpenAI(
-            api_key=azure_api_key,
-            api_version=api_version,
-            azure_endpoint=azure_endpoint,
+        client = ChatCompletionsClient(
+            endpoint=azure_endpoint,
+            credential=AzureKeyCredential(azure_api_key),
+            deployment=azure_deployment  # Correct for azure-ai-inference v1.0.0b9
         )
 
-        # Updated message format for OpenAI 1.x
         messages = [
             {
                 "role": "user",
@@ -81,9 +81,7 @@ def analyze_building_with_azure(image_data: str) -> str:
             }
         ]
 
-        # Updated API call for OpenAI 1.x
-        response = client.chat.completions.create(
-            model=azure_deployment,  # deployment name, not model name
+        response = client.complete(
             messages=messages,
             max_tokens=500,
             temperature=0.7
@@ -92,32 +90,30 @@ def analyze_building_with_azure(image_data: str) -> str:
         analysis = response.choices[0].message.content
         analysis_cache[image_hash] = analysis
 
-        print("✅ Azure OpenAI building analysis completed")
+        print("✅ Azure AI Inference building analysis completed")
         return analysis
 
     except Exception as e:
-        print(f"⚠️ Error with Azure OpenAI analysis: {e}")
+        print(f"⚠️ Error with Azure AI Inference analysis: {e}")
         return "Modern building with standard architectural features requiring restoration."
 
 
-# Function to generate restoration description with updated client
+# Function to generate restoration description
 def generate_restoration_description_with_azure(prompt: str, building_analysis: str) -> str:
     try:
         azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
         azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4")
-        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
+        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 
         if not azure_api_key or not azure_endpoint:
             raise Exception("Azure credentials not available")
 
-        print(f"📝 Generating detailed restoration description with OpenAI at: {azure_endpoint} (deployment: {azure_deployment})")
+        print(f"📝 Generating detailed restoration description with GPT-4.1 at: {azure_endpoint} (deployment: {azure_deployment})")
 
-        # Initialize client using OpenAI 1.x pattern
-        client = AzureOpenAI(
-            api_key=azure_api_key,
-            api_version=api_version,
-            azure_endpoint=azure_endpoint,
+        client = ChatCompletionsClient(
+            endpoint=azure_endpoint,
+            credential=AzureKeyCredential(azure_api_key),
+            deployment=azure_deployment
         )
 
         restoration_prompt = f"""
@@ -137,9 +133,7 @@ def generate_restoration_description_with_azure(prompt: str, building_analysis: 
 
         messages = [{"role": "user", "content": restoration_prompt}]
 
-        # Updated API call for OpenAI 1.x
-        response = client.chat.completions.create(
-            model=azure_deployment,  # deployment name, not model name
+        response = client.complete(
             messages=messages,
             max_tokens=1500,
             temperature=0.7
@@ -150,32 +144,91 @@ def generate_restoration_description_with_azure(prompt: str, building_analysis: 
         return description
 
     except Exception as e:
-        print(f"⚠️ OpenAI restoration description generation failed: {e}")
+        print(f"⚠️ GPT-4.1 restoration description generation failed: {e}")
         raise e
 
 
-# Function to create a restoration mockup
+# Function to create a restoration using Azure OpenAI image editing
 def create_restoration_mockup(original_image_data: str, description: str) -> str:
-    print("📸 Creating restoration mockup (using original image for now)")
-    return original_image_data
+    try:
+        # Get Azure OpenAI credentials
+        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+        deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-image-1")
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+        
+        if not endpoint or not api_key:
+            print("⚠️ Azure OpenAI image credentials missing")
+            return original_image_data
+            
+        # Construct the image editing URL
+        if not endpoint.endswith("/"):
+            endpoint += "/"
+        url = f"{endpoint}openai/deployments/{deployment}/images/edits?api-version={api_version}"
+        
+        # Create restoration prompt based on the analysis
+        prompt = f"""Restore this derelict building: clean the brickwork, repair windows, 
+        add fresh paint, modern lighting, and surrounding greenery. Keep the original structure intact.
+        
+        Specific improvements: {description}"""
+        
+        # Decode base64 image data
+        image_bytes = base64.b64decode(original_image_data)
+        
+        # Prepare the multipart form data
+        files = {
+            "image": ("building.png", image_bytes, "image/png")
+        }
+        data = {
+            "prompt": prompt,
+            "model": deployment,
+            "size": "1024x1024",
+            "quality": "high",
+            "n": 1
+        }
+        headers = {
+            "api-key": api_key
+        }
+        
+        print("🎨 Sending image to Azure OpenAI for restoration...")
+        response = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+        
+        if response.status_code == 200:
+            result_data = response.json()
+            if "data" in result_data and len(result_data["data"]) > 0:
+                restored_b64 = result_data["data"][0]["b64_json"]
+                print("✅ Image restoration completed successfully")
+                return restored_b64
+            else:
+                print("⚠️ No image data in response")
+                return original_image_data
+        else:
+            print(f"❌ Azure OpenAI image editing failed: {response.status_code}")
+            if response.text:
+                print(f"Error details: {response.text}")
+            return original_image_data
+            
+    except Exception as e:
+        print(f"⚠️ Error in create_restoration_mockup: {e}")
+        return original_image_data
 
 
 # Master function to orchestrate restoration
 def restore_building_image(image_data: str, options: dict) -> dict:
     azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-    print(f"🔑 Azure OpenAI credentials available: {azure_api_key is not None and azure_endpoint is not None}")
+    print(f"🔑 Azure credentials available: {azure_api_key is not None and azure_endpoint is not None}")
 
     if not azure_api_key or not azure_endpoint:
         return {
-            "error": "Azure OpenAI credentials not found in environment variables.",
-            "help": "Please set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_NAME environment variables."
+            "error": "Azure credentials not found in environment variables.",
+            "help": "Please set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and optionally AZURE_OPENAI_DEPLOYMENT_NAME environment variables."
         }
 
     result_id = uuid.uuid4().hex
 
     try:
-        print("🔍 Analyzing building with Azure OpenAI GPT-4 Vision...")
+        print("🔍 Analyzing building with Azure AI Inference GPT-4 Vision...")
         building_analysis = analyze_building_with_azure(image_data)
 
         selected_style = options.get("style", "Modern renovation")
@@ -199,19 +252,21 @@ def restore_building_image(image_data: str, options: dict) -> dict:
             additional_instructions=additional_instructions_text
         )
 
-        print("📝 Generating detailed restoration plan with OpenAI...")
+        print("📝 Generating detailed restoration plan with GPT-4.1...")
         try:
             restoration_description = generate_restoration_description_with_azure(prompt, building_analysis)
         except Exception as e:
-            print(f"⚠️ OpenAI description generation failed: {e}")
+            print(f"⚠️ GPT-4.1 description generation failed: {e}")
             restoration_description = f"Restoration plan for {selected_style} style renovation based on the analysis."
 
-        print("📸 Creating restoration visualization...")
+        print("📸 Creating AI-powered restoration...")
         try:
             restored_img_data = create_restoration_mockup(image_data, restoration_description)
+            restoration_success = restored_img_data != image_data  # Check if restoration actually happened
         except Exception as e:
-            print(f"⚠️ Restoration mockup creation failed: {e}")
+            print(f"⚠️ Restoration failed: {e}")
             restored_img_data = image_data
+            restoration_success = False
 
         result_data = {
             "id": result_id,
@@ -222,6 +277,7 @@ def restore_building_image(image_data: str, options: dict) -> dict:
             "options": options,
             "azure_analysis": building_analysis,
             "restoration_description": restoration_description,
+            "restoration_success": restoration_success,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -233,7 +289,7 @@ def restore_building_image(image_data: str, options: dict) -> dict:
     except Exception as e:
         return {
             "error": f"Restoration planning failed: {str(e)}",
-            "help": "Please check your Azure OpenAI credentials and deployment",
+            "help": "Please check your Azure AI credentials and GPT-4.1 deployment",
             "id": result_id
         }
 
@@ -392,7 +448,7 @@ def homepage():
     if not azure_available:
         api_status_alert = Div(
             Div(
-                "⚠️ Azure OpenAI credentials missing - Please set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_NAME",
+                "⚠️ Azure OpenAI credentials missing - Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT",
                 cls="alert alert-warning text-sm mb-4"
             )
         )
@@ -446,7 +502,7 @@ def homepage():
     # Control panel 
     control_panel = Div(
         H2("Building Restoration Visualizer", cls="text-xl font-bold mb-4 text-arch-blue"),
-        P("✨ Enhanced with Azure OpenAI + GPT-4 Vision Restoration Planning", cls="text-sm text-secondary mb-4"),
+        P("✨ Enhanced with Azure OpenAI Image Editing + GPT-4 Analysis", cls="text-sm text-secondary mb-4"),
         api_status_alert,
         upload_section,
         restoration_options,
@@ -612,8 +668,8 @@ def homepage():
                             <strong>Troubleshooting:</strong>
                             <ul class="list-disc list-inside mt-1">
                                 <li>Check your Azure OpenAI credentials</li>
-                                <li>Verify your deployment name is correct</li>
-                                <li>Ensure your account has proper billing setup</li>
+                                <li>Verify your Azure OpenAI deployment supports image editing</li>
+                                <li>Verify your accounts have proper billing setup</li>
                             </ul>
                         </div>`;
                     }
@@ -665,7 +721,7 @@ def homepage():
             const afterSrc = 'data:image/jpeg;base64,' + afterImgData;
             
             const sliderHTML = `
-                <h3 class="text-lg font-semibold mb-4 text-center">Original Building + AI Restoration Plan</h3>
+                <h3 class="text-lg font-semibold mb-4 text-center">Original Building → AI Restoration</h3>
                 <div class="comparison-slider relative">
                     <div class="before-after-container">
                         <img src="${beforeSrc}" class="before-image" alt="Original Building">
@@ -674,7 +730,7 @@ def homepage():
                         </div>
                         <div class="slider-handle"></div>
                         <div class="slider-label before-label">Original</div>
-                        <div class="slider-label after-label">AI Plan</div>
+                        <div class="slider-label after-label">AI Restored</div>
                     </div>
                 </div>
             `;
@@ -771,10 +827,17 @@ def homepage():
                 `;
             }
             
-            // Create mode info
-            let modeInfo = `<div class="text-xs text-base-content/70 mt-4">
-                    <p>✨ Powered by Azure OpenAI + GPT-4 Vision</p>
+            // Check if restoration was successful
+            let statusInfo = '';
+            if (data.restoration_success) {
+                statusInfo = `<div class="text-xs text-success mt-4">
+                    <p>✨ Powered by Azure OpenAI Image Editing</p>
                 </div>`;
+            } else {
+                statusInfo = `<div class="text-xs text-warning mt-4">
+                    <p>⚠️ AI restoration failed - showing original image</p>
+                </div>`;
+            }
             
             // Create details HTML
             const detailsHTML = `
@@ -788,7 +851,7 @@ def homepage():
                         <span class="font-semibold">Features:</span>
                         ${featuresHTML}
                     </div>
-                    ${modeInfo}
+                    ${statusInfo}
                 </div>
             `;
             
@@ -868,11 +931,11 @@ def homepage():
     });
     """)
     
-    return Title('Building Restoration Visualizer'), Main(
+    return Title("Building Restoration Visualizer"), Main(
         form_script,
         Div(
             H1("Building Restoration Visualizer", cls="text-3xl font-bold text-center mb-2 text-arch-blue"),
-            P("Powered by Azure OpenAI + GPT-4 Vision Restoration Planning", cls="text-center mb-8 text-base-content/70"),
+            P("Powered by Azure OpenAI Image Editing + GPT-4 Analysis", cls="text-center mb-8 text-base-content/70"),
             Div(
                 control_panel,
                 results_panel,
@@ -887,7 +950,7 @@ def homepage():
 # Restoration API Endpoint
 @rt("/restore", methods=["POST"])
 async def api_restore_building(request):
-    """API endpoint to generate building restoration using Azure OpenAI + GPT-4 Vision"""
+    """API endpoint to generate building restoration using Azure OpenAI Image Editing + GPT-4 Analysis"""
     try:
         # Get image data and options from request JSON
         data = await request.json()
@@ -903,8 +966,8 @@ async def api_restore_building(request):
         
         if not azure_api_key or not azure_endpoint:
             return JSONResponse({
-                "error": "Azure OpenAI credentials not found.",
-                "help": "Set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_NAME environment variables"
+                "error": "Azure credentials not found.",
+                "help": "Set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and optionally AZURE_OPENAI_DEPLOYMENT_NAME environment variables"
             }, status_code=401)
         
         # Call the restoration function
