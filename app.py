@@ -2,10 +2,8 @@ import os
 import uuid
 import time
 from dotenv import load_dotenv
-from azure.ai.inference import ChatCompletionsClient
-from azure.core.credentials import AzureKeyCredential
+from openai import AzureOpenAI  # Updated import
 from fasthtml.common import *
-
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +35,7 @@ Make the surrounding area clean and well-maintained.
 The result should look like a professional architectural visualization of the restored building.
 """
 
-# Function to analyze building
+# Function to analyze building with updated OpenAI client
 def analyze_building_with_azure(image_data: str) -> str:
     try:
         image_hash = hash(image_data[:100])
@@ -45,22 +43,26 @@ def analyze_building_with_azure(image_data: str) -> str:
             print("✅ Using cached building analysis")
             return analysis_cache[image_hash]
 
+        # Updated credential handling for OpenAI 1.x
         azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
         azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
+        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4-vision")
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
 
         if not azure_api_key or not azure_endpoint:
             print("⚠️ Azure OpenAI credentials not found")
             return "Modern building with standard architectural features requiring restoration."
 
-        print(f"🔍 Connecting to Azure AI Inference: {azure_endpoint} (deployment: {azure_deployment})")
+        print(f"🔍 Connecting to Azure OpenAI: {azure_endpoint} (deployment: {azure_deployment})")
 
-        client = ChatCompletionsClient(
-            endpoint=azure_endpoint,
-            credential=AzureKeyCredential(azure_api_key),
-            deployment=azure_deployment  # Correct for azure-ai-inference v1.0.0b9
+        # Initialize client using OpenAI 1.x pattern
+        client = AzureOpenAI(
+            api_key=azure_api_key,
+            api_version=api_version,
+            azure_endpoint=azure_endpoint,
         )
 
+        # Updated message format for OpenAI 1.x
         messages = [
             {
                 "role": "user",
@@ -79,7 +81,9 @@ def analyze_building_with_azure(image_data: str) -> str:
             }
         ]
 
-        response = client.complete(
+        # Updated API call for OpenAI 1.x
+        response = client.chat.completions.create(
+            model=azure_deployment,  # deployment name, not model name
             messages=messages,
             max_tokens=500,
             temperature=0.7
@@ -88,30 +92,32 @@ def analyze_building_with_azure(image_data: str) -> str:
         analysis = response.choices[0].message.content
         analysis_cache[image_hash] = analysis
 
-        print("✅ Azure AI Inference building analysis completed")
+        print("✅ Azure OpenAI building analysis completed")
         return analysis
 
     except Exception as e:
-        print(f"⚠️ Error with Azure AI Inference analysis: {e}")
+        print(f"⚠️ Error with Azure OpenAI analysis: {e}")
         return "Modern building with standard architectural features requiring restoration."
 
 
-# Function to generate restoration description
+# Function to generate restoration description with updated client
 def generate_restoration_description_with_azure(prompt: str, building_analysis: str) -> str:
     try:
         azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
         azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
+        azure_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4")
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
 
         if not azure_api_key or not azure_endpoint:
             raise Exception("Azure credentials not available")
 
-        print(f"📝 Generating detailed restoration description with GPT-4.1 at: {azure_endpoint} (deployment: {azure_deployment})")
+        print(f"📝 Generating detailed restoration description with OpenAI at: {azure_endpoint} (deployment: {azure_deployment})")
 
-        client = ChatCompletionsClient(
-            endpoint=azure_endpoint,
-            credential=AzureKeyCredential(azure_api_key),
-            deployment=azure_deployment
+        # Initialize client using OpenAI 1.x pattern
+        client = AzureOpenAI(
+            api_key=azure_api_key,
+            api_version=api_version,
+            azure_endpoint=azure_endpoint,
         )
 
         restoration_prompt = f"""
@@ -131,7 +137,9 @@ def generate_restoration_description_with_azure(prompt: str, building_analysis: 
 
         messages = [{"role": "user", "content": restoration_prompt}]
 
-        response = client.complete(
+        # Updated API call for OpenAI 1.x
+        response = client.chat.completions.create(
+            model=azure_deployment,  # deployment name, not model name
             messages=messages,
             max_tokens=1500,
             temperature=0.7
@@ -142,7 +150,7 @@ def generate_restoration_description_with_azure(prompt: str, building_analysis: 
         return description
 
     except Exception as e:
-        print(f"⚠️ GPT-4.1 restoration description generation failed: {e}")
+        print(f"⚠️ OpenAI restoration description generation failed: {e}")
         raise e
 
 
@@ -156,18 +164,18 @@ def create_restoration_mockup(original_image_data: str, description: str) -> str
 def restore_building_image(image_data: str, options: dict) -> dict:
     azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-    print(f"🔑 Azure AI credentials available: {azure_api_key is not None and azure_endpoint is not None}")
+    print(f"🔑 Azure OpenAI credentials available: {azure_api_key is not None and azure_endpoint is not None}")
 
     if not azure_api_key or not azure_endpoint:
         return {
-            "error": "Azure AI credentials not found in environment variables.",
-            "help": "Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT environment variables."
+            "error": "Azure OpenAI credentials not found in environment variables.",
+            "help": "Please set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_NAME environment variables."
         }
 
     result_id = uuid.uuid4().hex
 
     try:
-        print("🔍 Analyzing building with Azure AI Inference GPT-4 Vision...")
+        print("🔍 Analyzing building with Azure OpenAI GPT-4 Vision...")
         building_analysis = analyze_building_with_azure(image_data)
 
         selected_style = options.get("style", "Modern renovation")
@@ -191,11 +199,11 @@ def restore_building_image(image_data: str, options: dict) -> dict:
             additional_instructions=additional_instructions_text
         )
 
-        print("📝 Generating detailed restoration plan with GPT-4.1...")
+        print("📝 Generating detailed restoration plan with OpenAI...")
         try:
             restoration_description = generate_restoration_description_with_azure(prompt, building_analysis)
         except Exception as e:
-            print(f"⚠️ GPT-4.1 description generation failed: {e}")
+            print(f"⚠️ OpenAI description generation failed: {e}")
             restoration_description = f"Restoration plan for {selected_style} style renovation based on the analysis."
 
         print("📸 Creating restoration visualization...")
@@ -225,7 +233,7 @@ def restore_building_image(image_data: str, options: dict) -> dict:
     except Exception as e:
         return {
             "error": f"Restoration planning failed: {str(e)}",
-            "help": "Please check your Azure AI credentials and GPT-4.1 deployment",
+            "help": "Please check your Azure OpenAI credentials and deployment",
             "id": result_id
         }
 
@@ -384,7 +392,7 @@ def homepage():
     if not azure_available:
         api_status_alert = Div(
             Div(
-                "⚠️ Azure AI credentials missing - Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT",
+                "⚠️ Azure OpenAI credentials missing - Please set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_NAME",
                 cls="alert alert-warning text-sm mb-4"
             )
         )
@@ -438,7 +446,7 @@ def homepage():
     # Control panel 
     control_panel = Div(
         H2("Building Restoration Visualizer", cls="text-xl font-bold mb-4 text-arch-blue"),
-        P("✨ Enhanced with Azure AI Inference + GPT-4.1 Restoration Planning", cls="text-sm text-secondary mb-4"),
+        P("✨ Enhanced with Azure OpenAI + GPT-4 Vision Restoration Planning", cls="text-sm text-secondary mb-4"),
         api_status_alert,
         upload_section,
         restoration_options,
@@ -603,9 +611,9 @@ def homepage():
                         errorMessage += `<div class="mt-3 p-3 bg-base-300 rounded text-sm">
                             <strong>Troubleshooting:</strong>
                             <ul class="list-disc list-inside mt-1">
-                                <li>Check your Azure AI credentials</li>
-                                <li>For full image generation, set OPENAI_API_KEY</li>
-                                <li>Verify your accounts have proper billing setup</li>
+                                <li>Check your Azure OpenAI credentials</li>
+                                <li>Verify your deployment name is correct</li>
+                                <li>Ensure your account has proper billing setup</li>
                             </ul>
                         </div>`;
                     }
@@ -734,7 +742,6 @@ def homepage():
             const style = data.style;
             const options = data.options;
             const azureAnalysis = data.azure_analysis;
-            const demoMode = data.demo_mode;
             
             let featuresHTML = '<ul class="list-disc list-inside text-sm mt-2">';
             
@@ -765,12 +772,8 @@ def homepage():
             }
             
             // Create mode info
-            let modeInfo = demoMode ? 
-                `<div class="text-xs text-warning mt-4">
-                    <p>📸 Demo Mode: Add OPENAI_API_KEY for AI-generated restoration images</p>
-                </div>` :
-                `<div class="text-xs text-base-content/70 mt-4">
-                    <p>✨ Powered by Azure AI Inference + OpenAI DALL-E</p>
+            let modeInfo = `<div class="text-xs text-base-content/70 mt-4">
+                    <p>✨ Powered by Azure OpenAI + GPT-4 Vision</p>
                 </div>`;
             
             // Create details HTML
@@ -865,11 +868,11 @@ def homepage():
     });
     """)
     
-    return Title("Building Restoration Visualizer"), Main(
+    return Title('Building Restoration Visualizer'), Main(
         form_script,
         Div(
             H1("Building Restoration Visualizer", cls="text-3xl font-bold text-center mb-2 text-arch-blue"),
-            P("Powered by Azure AI Inference + GPT-4.1 Restoration Planning", cls="text-center mb-8 text-base-content/70"),
+            P("Powered by Azure OpenAI + GPT-4 Vision Restoration Planning", cls="text-center mb-8 text-base-content/70"),
             Div(
                 control_panel,
                 results_panel,
@@ -884,7 +887,7 @@ def homepage():
 # Restoration API Endpoint
 @rt("/restore", methods=["POST"])
 async def api_restore_building(request):
-    """API endpoint to generate building restoration using Azure AI Inference + GPT-4.1"""
+    """API endpoint to generate building restoration using Azure OpenAI + GPT-4 Vision"""
     try:
         # Get image data and options from request JSON
         data = await request.json()
@@ -900,8 +903,8 @@ async def api_restore_building(request):
         
         if not azure_api_key or not azure_endpoint:
             return JSONResponse({
-                "error": "Azure AI credentials not found.",
-                "help": "Set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT environment variables"
+                "error": "Azure OpenAI credentials not found.",
+                "help": "Set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_NAME environment variables"
             }, status_code=401)
         
         # Call the restoration function
@@ -925,7 +928,7 @@ def debug_results():
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Building Restoration Visualizer with Azure AI...")
+    print("🚀 Starting Building Restoration Visualizer with Azure OpenAI...")
     print(f"📊 In-memory storage initialized")
-    print(f"🔑 Azure AI: {'✅' if (os.environ.get('AZURE_OPENAI_API_KEY') and os.environ.get('AZURE_OPENAI_ENDPOINT')) else '❌'}")
+    print(f"🔑 Azure OpenAI: {'✅' if (os.environ.get('AZURE_OPENAI_API_KEY') and os.environ.get('AZURE_OPENAI_ENDPOINT')) else '❌'}")
     uvicorn.run(app, host="0.0.0.0", port=8002)
