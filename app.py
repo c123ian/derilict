@@ -9,6 +9,7 @@ from azure.core.credentials import AzureKeyCredential
 from fasthtml.common import *
 
 
+
 # Load environment variables
 load_dotenv()
 
@@ -60,7 +61,7 @@ def analyze_building_with_azure(image_data: str) -> str:
         client = ChatCompletionsClient(
             endpoint=azure_endpoint,
             credential=AzureKeyCredential(azure_api_key),
-            deployment=azure_deployment  # Correct for azure-ai-inference v1.0.0b9
+            deployment=azure_deployment
         )
 
         messages = [
@@ -166,38 +167,59 @@ def create_restoration_mockup(original_image_data: str, description: str) -> str
             endpoint += "/"
         url = f"{endpoint}openai/deployments/{deployment}/images/edits?api-version={api_version}"
         
-        # Create restoration prompt based on the analysis
-        prompt = f"""Restore this derelict building: clean the brickwork, repair windows, 
-        add fresh paint, modern lighting, and surrounding greenery. Keep the original structure intact.
-        
-        Specific improvements: {description}"""
+        # Enhanced restoration prompt for better perspective and photorealism
+        prompt = f"""Transform this derelict building into a beautifully restored version while maintaining EXACTLY the same camera angle, perspective, and viewpoint as the original photo.
+
+CRITICAL REQUIREMENTS:
+- Keep the EXACT same perspective, camera angle, and viewpoint
+- Maintain the same architectural proportions and scale
+- Preserve the building's structural footprint and shape
+- Create photorealistic results that look like professional architectural photography
+
+RESTORATION IMPROVEMENTS:
+- Clean and repair all damaged brickwork, concrete, or exterior materials
+- Replace broken or boarded windows with new, clean glass windows
+- Add fresh paint or protective coatings to all surfaces
+- Repair and modernize the roof if visible
+- Clean up debris and make surroundings neat and well-maintained
+- Add subtle modern lighting fixtures that complement the architecture
+- Include tasteful landscaping with plants, trees, or greenery where appropriate
+
+STYLE SPECIFICATIONS: {description}
+
+OUTPUT REQUIREMENTS:
+- Professional architectural photography quality
+- Sharp, high-definition details
+- Natural lighting that matches the original photo's lighting conditions
+- Realistic materials and textures
+- Clean, finished appearance suitable for real estate or architectural portfolio"""
         
         # Decode base64 image data
         image_bytes = base64.b64decode(original_image_data)
         
-        # Prepare the multipart form data
+        # Prepare the multipart form data with enhanced parameters
         files = {
             "image": ("building.png", image_bytes, "image/png")
         }
         data = {
             "prompt": prompt,
             "model": deployment,
-            "size": "1024x1024",
-            "quality": "high",
+            "size": "auto",  # Use auto size for best results
+            "quality": "medium",
             "n": 1
         }
         headers = {
             "api-key": api_key
         }
         
-        print("🎨 Sending image to Azure OpenAI for restoration...")
-        response = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+        print("🎨 Sending image to Azure OpenAI for high-quality restoration...")
+        response = requests.post(url, headers=headers, files=files, data=data, timeout=90)
         
         if response.status_code == 200:
             result_data = response.json()
             if "data" in result_data and len(result_data["data"]) > 0:
                 restored_b64 = result_data["data"][0]["b64_json"]
-                print("✅ Image restoration completed successfully")
+                print("✅ High-quality image restoration completed successfully")
                 return restored_b64
             else:
                 print("⚠️ No image data in response")
@@ -262,7 +284,7 @@ def restore_building_image(image_data: str, options: dict) -> dict:
         print("📸 Creating AI-powered restoration...")
         try:
             restored_img_data = create_restoration_mockup(image_data, restoration_description)
-            restoration_success = restored_img_data != image_data  # Check if restoration actually happened
+            restoration_success = restored_img_data != image_data
         except Exception as e:
             print(f"⚠️ Restoration failed: {e}")
             restored_img_data = image_data
@@ -270,7 +292,6 @@ def restore_building_image(image_data: str, options: dict) -> dict:
 
         result_data = {
             "id": result_id,
-            "style": selected_style,
             "prompt": prompt,
             "original_image": image_data,
             "restored_image": restored_img_data,
@@ -294,11 +315,13 @@ def restore_building_image(image_data: str, options: dict) -> dict:
         }
 
 
-# Set up the FastHTML app with required headers
+# Set up the FastHTML app with updated DaisyUI 5 CDN
 app, rt = fast_app(
     hdrs=(
-        Link(rel="stylesheet", href="https://cdn.jsdelivr.net/npm/daisyui@3.9.2/dist/full.css"),
-        Link(rel="stylesheet", href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css"),
+        # Updated to DaisyUI 5 with proper Tailwind CSS
+        Script(src="https://cdn.tailwindcss.com"),
+        # Then load DaisyUI
+        Link(href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css", rel="stylesheet", type="text/css"),
         Script(src="https://unpkg.com/htmx.org@1.9.10"),
         # Add custom theme styles
         Style("""
@@ -328,77 +351,12 @@ app, rt = fast_app(
             .text-arch-blue { color: oklch(47% 0.196 209.957); }
             .bg-renew-green { background-color: oklch(74% 0.134 119.635); }
             .custom-border { border-color: var(--color-base-300); }
-
-            .comparison-slider {
-                position: relative;
-                width: 100%;
-                overflow: hidden;
-                border-radius: 0.5rem;
-                margin: 1rem 0;
-            }
             
-            .before-after-container {
-                position: relative;
-                width: 100%;
-                height: 400px;
+            /* Enhanced diff component */
+            .diff {
+                border: 2px solid var(--color-base-300);
+                box-shadow: 0 10px 25px rgba(0,0,0,0.1);
             }
-            
-            .before-image, .after-image {
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-            }
-            
-            .after-container {
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 50%;
-                height: 100%;
-                overflow: hidden;
-            }
-            
-            .slider-handle {
-                position: absolute;
-                top: 0;
-                bottom: 0;
-                left: 50%;
-                width: 4px;
-                background: white;
-                transform: translateX(-50%);
-                cursor: ew-resize;
-                z-index: 10;
-            }
-            
-            .slider-handle::before {
-                content: '';
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                width: 30px;
-                height: 30px;
-                background: white;
-                border-radius: 50%;
-                box-shadow: 0 0 5px rgba(0,0,0,0.5);
-            }
-            
-            .slider-label {
-                position: absolute;
-                top: 10px;
-                padding: 5px 10px;
-                background: rgba(0,0,0,0.7);
-                color: white;
-                border-radius: 4px;
-                font-size: 12px;
-                z-index: 5;
-            }
-            
-            .before-label { left: 10px; }
-            .after-label { right: 10px; }
         """),
     )
 )
@@ -453,7 +411,7 @@ def homepage():
             )
         )
     
-    # Restoration options panel
+    # Restoration options panel (removed size dropdown)
     restoration_options = Div(
         H3("Restoration Options", cls="text-lg font-semibold mb-4 text-arch-blue"),
         create_style_dropdown(),
@@ -534,7 +492,7 @@ def homepage():
         
         # Container for results
         Div(
-            # Before/After comparison slider
+            # Before/After comparison using DaisyUI diff
             Div(
                 id="comparison-container",
                 cls="hidden"
@@ -570,366 +528,245 @@ def homepage():
     
     # Add script for form handling
     form_script = Script("""
-    document.addEventListener('DOMContentLoaded', function() {
-        // Form elements
-        const imageInput = document.getElementById('image-input');
-        const imagePreview = document.getElementById('image-preview');
-        const restoreButton = document.getElementById('restore-button');
-        
-        // Results elements
-        const loadingIndicator = document.getElementById('loading-indicator').parentElement;
-        const resultsPlaceholder = document.getElementById('results-placeholder');
-        const resultsContent = document.getElementById('results-content');
-        const comparisonContainer = document.getElementById('comparison-container');
-        const restorationDetails = document.getElementById('restoration-details');
-        const resultActions = document.getElementById('result-actions');
-        const downloadButton = document.getElementById('download-button');
-        const newButton = document.getElementById('new-button');
-        
-        // State variables
-        let originalImageData = null;
-        let restoredImageData = null;
-        
-        // Get options from the form
-        function getOptions() {
-            return {
-                style: document.querySelector('select[name="style"]').value,
-                preserve_heritage: document.querySelector('input[name="preserve_heritage"]').checked,
-                landscaping: document.querySelector('input[name="landscaping"]').checked,
-                lighting: document.querySelector('input[name="lighting"]').checked,
-                expand_building: document.querySelector('input[name="expand_building"]').checked
-            };
-        }
-        
-        // Handle image upload
-        imageInput.addEventListener('change', function(event) {
-            const file = event.target.files[0];
+        document.addEventListener('DOMContentLoaded', function() {
+            // Form elements
+            const imageInput = document.getElementById('image-input');
+            const imagePreview = document.getElementById('image-preview');
+            const restoreButton = document.getElementById('restore-button');
             
-            if (!file) {
-                resetForm();
-                return;
+            // Results elements
+            const loadingIndicator = document.getElementById('loading-indicator').parentElement;
+            const resultsPlaceholder = document.getElementById('results-placeholder');
+            
+            // State variables
+            let originalImageData = null;
+            
+            // Get options from the form
+            function getOptions() {
+                return {
+                    style: document.querySelector('select[name="style"]').value,
+                    preserve_heritage: document.querySelector('input[name="preserve_heritage"]').checked,
+                    landscaping: document.querySelector('input[name="landscaping"]').checked,
+                    lighting: document.querySelector('input[name="lighting"]').checked,
+                    expand_building: document.querySelector('input[name="expand_building"]').checked
+                };
             }
             
-            // Show preview
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                imagePreview.src = e.target.result;
-                imagePreview.classList.remove('hidden');
-                restoreButton.disabled = false;
+            // Handle image upload
+            imageInput.addEventListener('change', function(event) {
+                const file = event.target.files[0];
                 
-                // Store the base64 data (remove the data URL prefix)
-                originalImageData = e.target.result.split(',')[1];
-            };
-            
-            reader.readAsDataURL(file);
-        });
-        
-        // Reset the form
-        function resetForm() {
-            imageInput.value = '';
-            imagePreview.src = '';
-            imagePreview.classList.add('hidden');
-            restoreButton.disabled = true;
-            originalImageData = null;
-        }
-        
-        // Handle restore button click
-        restoreButton.addEventListener('click', function() {
-            // Show loading state
-            loadingIndicator.classList.remove('hidden');
-            resultsPlaceholder.classList.add('hidden');
-            resultsContent.classList.add('hidden');
-            resultActions.classList.add('hidden');
-            restoreButton.disabled = true;
-            
-            // Send request to API
-            fetch('/restore', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    image_data: originalImageData,
-                    options: getOptions()
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                // Hide loading indicator
-                loadingIndicator.classList.add('hidden');
-                
-                if (data.error) {
-                    // Show error message with help text if available
-                    let errorMessage = `Error: ${data.error}`;
-                    
-                    if (data.help) {
-                        errorMessage += `<div class="mt-2 text-sm">${data.help}</div>`;
-                        errorMessage += `<div class="mt-3 p-3 bg-base-300 rounded text-sm">
-                            <strong>Troubleshooting:</strong>
-                            <ul class="list-disc list-inside mt-1">
-                                <li>Check your Azure OpenAI credentials</li>
-                                <li>Verify your Azure OpenAI deployment supports image editing</li>
-                                <li>Verify your accounts have proper billing setup</li>
-                            </ul>
-                        </div>`;
-                    }
-                    
-                    comparisonContainer.innerHTML = `
-                        <div class="alert alert-error">
-                            <span>${errorMessage}</span>
-                        </div>
-                    `;
-                    comparisonContainer.classList.remove('hidden');
-                    resultsContent.classList.remove('hidden');
-                    restoreButton.disabled = false;
+                if (!file) {
+                    resetForm();
                     return;
                 }
                 
-                // Store the restored image data
-                restoredImageData = data.restored_image;
-                
-                // Create the before/after comparison slider
-                createComparisonSlider(originalImageData, restoredImageData);
-                
-                // Create restoration details
-                createRestorationDetails(data);
-                
-                // Show results sections
-                comparisonContainer.classList.remove('hidden');
-                restorationDetails.classList.remove('hidden');
-                resultsContent.classList.remove('hidden');
-                resultActions.classList.remove('hidden');
-                restoreButton.disabled = false;
-            })
-            .catch(error => {
-                console.error('Error restoring image:', error);
-                loadingIndicator.classList.add('hidden');
-                comparisonContainer.innerHTML = `
-                    <div class="alert alert-error">
-                        <span>Error: Could not process your request. Please try again.</span>
-                    </div>
-                `;
-                comparisonContainer.classList.remove('hidden');
-                resultsContent.classList.remove('hidden');
-                restoreButton.disabled = false;
-            });
-        });
-        
-        // Create the before/after comparison slider
-        function createComparisonSlider(beforeImgData, afterImgData) {
-            const beforeSrc = 'data:image/jpeg;base64,' + beforeImgData;
-            const afterSrc = 'data:image/jpeg;base64,' + afterImgData;
-            
-            const sliderHTML = `
-                <h3 class="text-lg font-semibold mb-4 text-center">Original Building → AI Restoration</h3>
-                <div class="comparison-slider relative">
-                    <div class="before-after-container">
-                        <img src="${beforeSrc}" class="before-image" alt="Original Building">
-                        <div class="after-container" style="width: 50%;">
-                            <img src="${afterSrc}" class="after-image" alt="Restored Building">
-                        </div>
-                        <div class="slider-handle"></div>
-                        <div class="slider-label before-label">Original</div>
-                        <div class="slider-label after-label">AI Restored</div>
-                    </div>
-                </div>
-            `;
-            
-            // Set HTML
-            comparisonContainer.innerHTML = sliderHTML;
-            
-            // Setup slider functionality
-            setupSlider();
-        }
-        
-        // Setup the slider functionality
-        function setupSlider() {
-            const container = document.querySelector('.before-after-container');
-            const handle = document.querySelector('.slider-handle');
-            const afterContainer = document.querySelector('.after-container');
-            
-            let isDragging = false;
-            
-            // Handle mouse events
-            handle.addEventListener('mousedown', startDrag);
-            document.addEventListener('mousemove', drag);
-            document.addEventListener('mouseup', stopDrag);
-            
-            // Handle touch events
-            handle.addEventListener('touchstart', startDrag);
-            document.addEventListener('touchmove', drag);
-            document.addEventListener('touchend', stopDrag);
-            
-            function startDrag(e) {
-                isDragging = true;
-                e.preventDefault();
-            }
-            
-            function drag(e) {
-                if (!isDragging) return;
-                
-                let clientX;
-                if (e.type === 'touchmove') {
-                    clientX = e.touches[0].clientX;
-                } else {
-                    clientX = e.clientX;
+                // Validate file type
+                if (!file.type.startsWith('image/')) {
+                    alert('Please select a valid image file.');
+                    resetForm();
+                    return;
                 }
                 
-                const rect = container.getBoundingClientRect();
-                const x = clientX - rect.left;
-                const width = container.offsetWidth;
+                // Validate file size (max 10MB)
+                if (file.size > 10 * 1024 * 1024) {
+                    alert('Image size must be less than 10MB.');
+                    resetForm();
+                    return;
+                }
                 
-                // Calculate percentage (constrained between 0 and 100)
-                let percent = (x / width) * 100;
-                percent = Math.max(0, Math.min(100, percent));
+                // Show preview
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    imagePreview.src = e.target.result;
+                    imagePreview.classList.remove('hidden');
+                    restoreButton.disabled = false;
+                    
+                    // Store the base64 data (remove the data URL prefix)
+                    originalImageData = e.target.result.split(',')[1];
+                };
                 
-                // Update elements
-                afterContainer.style.width = percent + '%';
-                handle.style.left = percent + '%';
+                reader.readAsDataURL(file);
+            });
+            
+            // Reset the form
+            function resetForm() {
+                imageInput.value = '';
+                imagePreview.src = '';
+                imagePreview.classList.add('hidden');
+                restoreButton.disabled = true;
+                originalImageData = null;
+                
+                // Reset results area
+                resultsPlaceholder.classList.remove('hidden');
+                loadingIndicator.classList.add('hidden');
             }
             
-            function stopDrag() {
-                isDragging = false;
-            }
-        }
-        
-        // Create restoration details section
-        function createRestorationDetails(data) {
-            const style = data.style;
-            const options = data.options;
-            const azureAnalysis = data.azure_analysis;
+            // Handle restore button click
+            restoreButton.addEventListener('click', function() {
+                if (!originalImageData) {
+                    alert('Please upload an image first.');
+                    return;
+                }
+                
+                // Show loading state
+                loadingIndicator.classList.remove('hidden');
+                resultsPlaceholder.classList.add('hidden');
+                restoreButton.disabled = true;
+                restoreButton.textContent = 'Generating...';
+                
+                // Get form options
+                const options = getOptions();
+                
+                // Send request to API
+                fetch('/restore', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        image_data: originalImageData,
+                        options: options
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // Hide loading indicator
+                    loadingIndicator.classList.add('hidden');
+                    restoreButton.disabled = false;
+                    restoreButton.textContent = 'Generate Restoration';
+                    
+                    if (data.error) {
+                        // Show error message
+                        showError(data.error, data.help);
+                        return;
+                    }
+                    
+                    // Success - redirect to results page
+                    if (data.id) {
+                        window.location.href = `/results/${data.id}`;
+                    } else {
+                        showError('No result ID received from server');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error restoring image:', error);
+                    loadingIndicator.classList.add('hidden');
+                    restoreButton.disabled = false;
+                    restoreButton.textContent = 'Generate Restoration';
+                    showError('Could not process your request. Please try again.');
+                });
+            });
             
-            let featuresHTML = '<ul class="list-disc list-inside text-sm mt-2">';
-            
-            if (options.preserve_heritage) {
-                featuresHTML += '<li>Heritage elements preserved</li>';
-            }
-            if (options.landscaping) {
-                featuresHTML += '<li>Enhanced landscaping and greenery</li>';
-            }
-            if (options.lighting) {
-                featuresHTML += '<li>Architectural lighting highlighted</li>';
-            }
-            if (options.expand_building) {
-                featuresHTML += '<li>Tasteful expansion considered</li>';
-            }
-            
-            featuresHTML += '</ul>';
-            
-            // Create Azure analysis section
-            let analysisHTML = '';
-            if (azureAnalysis) {
-                analysisHTML = `
-                    <div class="mb-4 p-3 bg-accent/10 rounded-lg">
-                        <span class="font-semibold text-accent">🤖 AI Building Analysis:</span>
-                        <p class="text-sm mt-1">${azureAnalysis}</p>
+            // Show error message
+            function showError(errorMessage, helpText) {
+                let fullErrorMessage = `<div class="alert alert-error mb-4">
+                    <div>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span>Error: ${errorMessage}</span>
                     </div>
-                `;
-            }
-            
-            // Check if restoration was successful
-            let statusInfo = '';
-            if (data.restoration_success) {
-                statusInfo = `<div class="text-xs text-success mt-4">
-                    <p>✨ Powered by Azure OpenAI Image Editing</p>
                 </div>`;
-            } else {
-                statusInfo = `<div class="text-xs text-warning mt-4">
-                    <p>⚠️ AI restoration failed - showing original image</p>
-                </div>`;
+                
+                if (helpText) {
+                    fullErrorMessage += `<div class="alert alert-info mb-4">
+                        <div>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span>${helpText}</span>
+                        </div>
+                    </div>`;
+                    
+                    fullErrorMessage += `<div class="alert alert-warning">
+                        <div>
+                            <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16c-.77.833.192 2.5 1.732 2.5z" />
+                            </svg>
+                            <div>
+                                <strong>Troubleshooting:</strong>
+                                <ul class="list-disc list-inside mt-2 text-sm">
+                                    <li>Check your Azure OpenAI credentials</li>
+                                    <li>Verify your Azure OpenAI deployment supports image editing</li>
+                                    <li>Ensure your account has proper billing setup</li>
+                                    <li>Try a different image or smaller file size</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>`;
+                }
+                
+                // Show error in results area
+                resultsPlaceholder.innerHTML = fullErrorMessage;
+                resultsPlaceholder.classList.remove('hidden');
             }
             
-            // Create details HTML
-            const detailsHTML = `
-                <div class="bg-base-200 p-4 rounded-lg">
-                    <div class="flex justify-between items-center mb-2">
-                        <h3 class="text-lg font-bold">Restoration Details</h3>
-                        <span class="badge badge-primary">${style}</span>
-                    </div>
-                    ${analysisHTML}
-                    <div class="mb-2">
-                        <span class="font-semibold">Features:</span>
-                        ${featuresHTML}
-                    </div>
-                    ${statusInfo}
-                </div>
-            `;
+            // Set up drag and drop functionality
+            const dropzone = document.querySelector('label[for="image-input"]').parentElement;
             
-            // Set HTML
-            restorationDetails.innerHTML = detailsHTML;
-        }
-        
-        // Setup download button
-        downloadButton.addEventListener('click', function() {
-            if (!restoredImageData) return;
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropzone.addEventListener(eventName, function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+            });
             
-            // Create download link
-            const link = document.createElement('a');
-            link.href = 'data:image/jpeg;base64,' + restoredImageData;
-            link.download = 'restored_building.jpg';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        });
-        
-        // Setup new button
-        newButton.addEventListener('click', function() {
-            // Reset form
+            // Visual feedback for drag and drop
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropzone.addEventListener(eventName, function() {
+                    dropzone.classList.add('border-primary', 'bg-primary/5');
+                });
+            });
+            
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropzone.addEventListener(eventName, function() {
+                    dropzone.classList.remove('border-primary', 'bg-primary/5');
+                });
+            });
+            
+            // Handle file drop
+            dropzone.addEventListener('drop', function(e) {
+                const files = e.dataTransfer.files;
+                
+                if (files.length > 0) {
+                    const file = files[0];
+                    
+                    // Validate file type
+                    if (!file.type.startsWith('image/')) {
+                        alert('Please drop a valid image file.');
+                        return;
+                    }
+                    
+                    // Update file input
+                    const dataTransfer = new DataTransfer();
+                    dataTransfer.items.add(file);
+                    imageInput.files = dataTransfer.files;
+                    
+                    // Trigger change event
+                    const event = new Event('change');
+                    imageInput.dispatchEvent(event);
+                }
+            });
+            
+            // Add keyboard navigation
+            document.addEventListener('keydown', function(e) {
+                // Enter key on restore button
+                if (e.key === 'Enter' && document.activeElement === restoreButton) {
+                    e.preventDefault();
+                    restoreButton.click();
+                }
+                
+                // Escape key to reset form
+                if (e.key === 'Escape' && originalImageData) {
+                    resetForm();
+                }
+            });
+            
+            // Initialize form state
             resetForm();
-            
-            // Reset results
-            resultsPlaceholder.classList.remove('hidden');
-            resultsContent.classList.add('hidden');
-            resultActions.classList.add('hidden');
-            comparisonContainer.classList.add('hidden');
-            restorationDetails.classList.add('hidden');
-            
-            // Reset state
-            originalImageData = null;
-            restoredImageData = null;
         });
-        
-        // Set up drag and drop
-        const dropzone = document.querySelector('label[for="image-input"]');
-        
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropzone.addEventListener(eventName, function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-            });
-        });
-        
-        // Highlight on drag
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropzone.addEventListener(eventName, function() {
-                dropzone.classList.add('bg-base-200');
-            });
-        });
-        
-        // Remove highlight on drag leave/drop
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropzone.addEventListener(eventName, function() {
-                dropzone.classList.remove('bg-base-200');
-            });
-        });
-        
-        // Handle file drop
-        dropzone.addEventListener('drop', function(e) {
-            const file = e.dataTransfer.files[0];
-            
-            if (file) {
-                // Update file input
-                const dataTransfer = new DataTransfer();
-                dataTransfer.items.add(file);
-                imageInput.files = dataTransfer.files;
-                
-                // Trigger change event
-                const event = new Event('change');
-                imageInput.dispatchEvent(event);
-            }
-        });
-    });
-    """)
+        """)
     
     return Title("Building Restoration Visualizer"), Main(
         form_script,
@@ -979,15 +816,235 @@ async def api_restore_building(request):
         print(f"Error restoring image: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# Debug endpoint to view stored results
-@rt("/debug/results")
-def debug_results():
-    """Debug endpoint to view all stored restoration results"""
-    return JSONResponse({
-        "total_results": len(restoration_results),
-        "cache_size": len(analysis_cache),
-        "results": list(restoration_results.keys())
-    })
+@rt("/results/{result_id}")
+def results_page(result_id: str):
+    """Display restoration results on a dedicated page"""
+    
+    if result_id not in restoration_results:
+        return Title("Result Not Found"), Main(
+            Div(
+                H1("Result Not Found", cls="text-2xl font-bold text-center mb-4"),
+                P("The requested restoration result could not be found.", cls="text-center mb-4"),
+                A("← Back to Home", href="/", cls="btn btn-primary"),
+                cls="container mx-auto px-4 py-8 text-center"
+            )
+        )
+    
+    result = restoration_results[result_id]
+    
+    return Title("Restoration Results"), Main(
+        Div(
+            # Header
+            Div(
+                H1("Building Restoration Results", cls="text-3xl font-bold text-center mb-2 text-arch-blue"),
+                # P(f"Style: {result['style']}", cls="text-center mb-4 text-lg"),
+                Div(
+                    A("← Back to Home", href="/", cls="btn btn-outline btn-primary mr-4"),
+                    Button("Download Result", cls="btn btn-accent", id="download-btn"),
+                    cls="text-center mb-8"
+                ),
+                cls="mb-8"
+            ),
+            
+            # Full-width image comparison
+            Div(
+                H2("Before & After Comparison", cls="text-xl font-bold text-center mb-6"),
+                Div(
+                    # Use a proven image comparison library
+                    Div(
+                        id="comparison-container",
+                        cls="w-full max-w-6xl mx-auto"
+                    ),
+                    cls="mb-8"
+                ),
+                cls="mb-8"
+            ),
+            
+            # Details section
+            Div(
+                Div(
+                    H3("Restoration Details", cls="text-lg font-bold mb-4"),
+                    Div(
+                        P(f"Building Analysis: {result['azure_analysis']}", cls="mb-4"),
+                        P(f"Generated: {result['created_at']}", cls="text-sm text-base-content/70"),
+                        cls="bg-base-200 p-6 rounded-lg"
+                    ),
+                    cls="max-w-4xl mx-auto"
+                ),
+                cls="mb-8"
+            ),
+            
+            cls="container mx-auto px-4 py-8"
+        ),
+        
+        # JavaScript for the comparison
+        Script(f"""
+            document.addEventListener('DOMContentLoaded', function() {{
+                const originalImage = '{result['original_image']}';
+                const restoredImage = '{result['restored_image']}';
+                
+                // Use img-comparison-slider library
+                const comparisonHtml = `
+                    <div class="before-after-slider" style="max-width: 100%; margin: 0 auto;">
+                        <div class="ba-slider">
+                            <img src="data:image/jpeg;base64,${{originalImage}}" alt="Original Building" />
+                            <div class="resize">
+                                <img src="data:image/jpeg;base64,${{restoredImage}}" alt="Restored Building" />
+                            </div>
+                            <span class="handle"></span>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('comparison-container').innerHTML = comparisonHtml;
+                
+                // Initialize the slider
+                initializeSlider();
+                
+                // Download button
+                document.getElementById('download-btn').addEventListener('click', function() {{
+                    const link = document.createElement('a');
+                    link.href = 'data:image/jpeg;base64,' + restoredImage;
+                    link.download = 'restored_building.jpg';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }});
+            }});
+            
+            function initializeSlider() {{
+                const slider = document.querySelector('.ba-slider');
+                const resize = document.querySelector('.resize');
+                const handle = document.querySelector('.handle');
+                
+                let active = false;
+                
+                // Initialize at 50%
+                resize.style.width = '50%';
+                handle.style.left = '50%';
+                
+                handle.addEventListener('mousedown', function() {{
+                    active = true;
+                }});
+                
+                document.addEventListener('mousemove', function(e) {{
+                    if (!active) return;
+                    
+                    const rect = slider.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const percentage = (x / rect.width) * 100;
+                    
+                    if (percentage >= 0 && percentage <= 100) {{
+                        resize.style.width = percentage + '%';
+                        handle.style.left = percentage + '%';
+                    }}
+                }});
+                
+                document.addEventListener('mouseup', function() {{
+                    active = false;
+                }});
+                
+                // Touch support
+                handle.addEventListener('touchstart', function() {{
+                    active = true;
+                }});
+                
+                document.addEventListener('touchmove', function(e) {{
+                    if (!active) return;
+                    
+                    const rect = slider.getBoundingClientRect();
+                    const x = e.touches[0].clientX - rect.left;
+                    const percentage = (x / rect.width) * 100;
+                    
+                    if (percentage >= 0 && percentage <= 100) {{
+                        resize.style.width = percentage + '%';
+                        handle.style.left = percentage + '%';
+                    }}
+                }});
+                
+                document.addEventListener('touchend', function() {{
+                    active = false;
+                }});
+            }}
+        """),
+        
+        # Custom CSS for the image comparison
+        Style("""
+            .before-after-slider {
+                position: relative;
+                overflow: hidden;
+                border-radius: 12px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            }
+            
+            .ba-slider {
+                position: relative;
+                width: 100%;
+                height: 70vh;
+                overflow: hidden;
+            }
+            
+            .ba-slider img {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                object-position: center;
+                user-select: none;
+                pointer-events: none;
+            }
+            
+            .resize {
+                position: absolute;
+                top: 0;
+                left: 0;
+                height: 100%;
+                width: 50%;
+                overflow: hidden;
+            }
+            
+            .handle {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                width: 4px;
+                background: white;
+                cursor: ew-resize;
+                z-index: 10;
+                transform: translateX(-50%);
+            }
+            
+            .handle::before {
+                content: '';
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 30px;
+                height: 30px;
+                background: white;
+                border-radius: 50%;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            }
+            
+            .handle::after {
+                content: '↔';
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                color: #333;
+                font-size: 14px;
+                font-weight: bold;
+                z-index: 1;
+            }
+        """),
+        
+        cls="min-h-screen bg-base-100"
+    )
+
 
 if __name__ == "__main__":
     import uvicorn
