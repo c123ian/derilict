@@ -879,168 +879,140 @@ def results_page(result_id: str):
         
         # JavaScript for the comparison
         Script(f"""
-            document.addEventListener('DOMContentLoaded', function() {{
-                const originalImage = '{result['original_image']}';
-                const restoredImage = '{result['restored_image']}';
-                
-                // Use img-comparison-slider library
-                const comparisonHtml = `
-                    <div class="before-after-slider" style="max-width: 100%; margin: 0 auto;">
-                        <div class="ba-slider">
-                            <img src="data:image/jpeg;base64,${{originalImage}}" alt="Original Building" />
-                            <div class="resize">
-                                <img src="data:image/jpeg;base64,${{restoredImage}}" alt="Restored Building" />
-                            </div>
-                            <span class="handle"></span>
-                        </div>
-                    </div>
-                `;
-                
-                document.getElementById('comparison-container').innerHTML = comparisonHtml;
-                
-                // Initialize the slider
-                initializeSlider();
-                
-                // Download button
-                document.getElementById('download-btn').addEventListener('click', function() {{
-                    const link = document.createElement('a');
-                    link.href = 'data:image/jpeg;base64,' + restoredImage;
-                    link.download = 'restored_building.jpg';
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                }});
-            }});
-            
-            function initializeSlider() {{
-                const slider = document.querySelector('.ba-slider');
-                const resize = document.querySelector('.resize');
-                const handle = document.querySelector('.handle');
-                
-                let active = false;
-                
-                // Initialize at 50%
-                resize.style.width = '50%';
-                handle.style.left = '50%';
-                
-                handle.addEventListener('mousedown', function() {{
-                    active = true;
-                }});
-                
-                document.addEventListener('mousemove', function(e) {{
-                    if (!active) return;
-                    
-                    const rect = slider.getBoundingClientRect();
-                    const x = e.clientX - rect.left;
-                    const percentage = (x / rect.width) * 100;
-                    
-                    if (percentage >= 0 && percentage <= 100) {{
-                        resize.style.width = percentage + '%';
-                        handle.style.left = percentage + '%';
-                    }}
-                }});
-                
-                document.addEventListener('mouseup', function() {{
-                    active = false;
-                }});
-                
-                // Touch support
-                handle.addEventListener('touchstart', function() {{
-                    active = true;
-                }});
-                
-                document.addEventListener('touchmove', function(e) {{
-                    if (!active) return;
-                    
-                    const rect = slider.getBoundingClientRect();
-                    const x = e.touches[0].clientX - rect.left;
-                    const percentage = (x / rect.width) * 100;
-                    
-                    if (percentage >= 0 && percentage <= 100) {{
-                        resize.style.width = percentage + '%';
-                        handle.style.left = percentage + '%';
-                    }}
-                }});
-                
-                document.addEventListener('touchend', function() {{
-                    active = false;
-                }});
+            document.addEventListener('DOMContentLoaded', () => {{
+            /* ------------------------------------------------------------------
+                Base-64 images supplied by FastHTML
+                ------------------------------------------------------------------ */
+            const originalImage = '{result['original_image']}';
+            const restoredImage = '{result['restored_image']}';
+
+            /* ------------------------------------------------------------------
+                Inject CSS for the clip-path slider
+                ------------------------------------------------------------------ */
+            const css = `
+            .ba-slider {{
+            position: relative;
+            overflow: hidden;
+            height: 70vh;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,.3);
             }}
-        """),
-        
-        # Custom CSS for the image comparison
-        Style("""
-            .before-after-slider {
-                position: relative;
-                overflow: hidden;
-                border-radius: 12px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-            }
-            
-            .ba-slider {
-                position: relative;
-                width: 100%;
-                height: 70vh;
-                overflow: hidden;
-            }
-            
-            .ba-slider img {
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-                object-position: center;
-                user-select: none;
-                pointer-events: none;
-            }
-            
-            .resize {
-                position: absolute;
-                top: 0;
-                left: 0;
-                height: 100%;
-                width: 50%;
-                overflow: hidden;
-            }
-            
-            .handle {
-                position: absolute;
-                top: 0;
-                bottom: 0;
-                width: 4px;
-                background: white;
-                cursor: ew-resize;
-                z-index: 10;
-                transform: translateX(-50%);
-            }
-            
-            .handle::before {
-                content: '';
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                width: 30px;
-                height: 30px;
-                background: white;
-                border-radius: 50%;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-            }
-            
-            .handle::after {
-                content: '↔';
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                color: #333;
-                font-size: 14px;
-                font-weight: bold;
-                z-index: 1;
-            }
-        """),
+
+            .ba-slider img {{
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            user-select: none;
+            pointer-events: none;
+            }}
+
+            .img-front {{
+            /* Reveal according to --pos (0 – 100 %) */
+            clip-path: inset(0 calc(100% - var(--pos,50%)) 0 0);
+            }}
+
+            .handle {{
+            position: absolute;
+            inset: 0 auto 0 var(--pos,50%);
+            width: 4px;
+            background: #fff;
+            transform: translateX(-50%);
+            cursor: ew-resize;
+            z-index: 10;
+            }}
+
+            .handle::before {{
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 30px;
+            height: 30px;
+            background: #fff;
+            border-radius: 50%;
+            box-shadow: 0 2px 10px rgba(0,0,0,.3);
+            transform: translate(-50%,-50%);
+            }}
+
+            .handle::after {{
+            content: '↔';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            font-size: 14px;
+            font-weight: 700;
+            color: #333;
+            transform: translate(-50%,-50%);
+            }}
+            `;
+            const styleTag = document.createElement('style');
+            styleTag.textContent = css;
+            document.head.appendChild(styleTag);
+
+            /* ------------------------------------------------------------------
+                Build the comparison-slider markup
+                ------------------------------------------------------------------ */
+            const comparisonHTML = `
+                <div class="ba-slider" style="--pos:50%;">
+                <img src="data:image/jpeg;base64,${{originalImage}}" alt="Original">
+                <img src="data:image/jpeg;base64,${{restoredImage}}" class="img-front" alt="Restored">
+                <span class="handle" aria-label="Drag to compare"></span>
+                </div>
+            `;
+            const container = document.getElementById('comparison-container');
+            container.innerHTML = comparisonHTML;
+
+            /* ------------------------------------------------------------------
+                Slider interaction – update CSS variable  --pos
+                ------------------------------------------------------------------ */
+            const slider = container.querySelector('.ba-slider');
+            const handle = slider.querySelector('.handle');
+
+            function setPos(clientX) {{
+                const rect = slider.getBoundingClientRect();
+                const pct  = Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+                slider.style.setProperty('--pos', (pct * 100) + '%');
+            }}
+
+            /* Mouse events */
+            handle.addEventListener('mousedown', e => {{
+                e.preventDefault();
+                const move = m => setPos(m.clientX);
+                const up   = () => {{
+                document.removeEventListener('mousemove', move);
+                document.removeEventListener('mouseup',   up);
+                }};
+                document.addEventListener('mousemove', move);
+                document.addEventListener('mouseup',   up);
+            }});
+
+            /* Touch events */
+            handle.addEventListener('touchstart', () => {{
+                const move = t => setPos(t.touches[0].clientX);
+                const end  = () => {{
+                document.removeEventListener('touchmove', move);
+                document.removeEventListener('touchend',  end);
+                }};
+                document.addEventListener('touchmove', move);
+                document.addEventListener('touchend',  end);
+            }});
+
+            /* ------------------------------------------------------------------
+                Download restored image
+                ------------------------------------------------------------------ */
+            document.getElementById('download-btn').addEventListener('click', () => {{
+                const link = document.createElement('a');
+                link.href = 'data:image/jpeg;base64,' + restoredImage;
+                link.download = 'restored_building.jpg';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }});
+            }});
+            """),
+
         
         cls="min-h-screen bg-base-100"
     )
