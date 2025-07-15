@@ -3,6 +3,7 @@ import uuid
 import time
 import requests
 import base64
+import json
 from dotenv import load_dotenv
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
@@ -267,7 +268,7 @@ OUTPUT REQUIREMENTS:
 
 
 # Master function to orchestrate restoration
-def restore_building_image(image_data: str, options: dict) -> dict:
+def restore_building_image(image_data: str, options: dict, address: str = None, lat: str = None, lon: str = None) -> dict:
     azure_api_key = os.environ.get("AZURE_OPENAI_API_KEY")
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     print(f"🔑 Azure credentials available: {azure_api_key is not None and azure_endpoint is not None}")
@@ -321,6 +322,17 @@ def restore_building_image(image_data: str, options: dict) -> dict:
             restored_img_data = image_data
             restoration_success = False
 
+        # Convert lat/lon to float if they exist and are valid
+        latitude = None
+        longitude = None
+        if lat and lon:
+            try:
+                latitude = float(lat)
+                longitude = float(lon)
+            except (ValueError, TypeError):
+                latitude = None
+                longitude = None
+
         result_data = {
             "id": result_id,
             "prompt": prompt,
@@ -330,6 +342,11 @@ def restore_building_image(image_data: str, options: dict) -> dict:
             "azure_analysis": building_analysis,
             "restoration_description": restoration_description,
             "restoration_success": restoration_success,
+            "address": address or "",
+            "location": {
+                "lat": latitude,
+                "lon": longitude
+            },
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -346,7 +363,7 @@ def restore_building_image(image_data: str, options: dict) -> dict:
         }
 
 
-# Set up the FastHTML app with updated DaisyUI 5 CDN
+# Set up the FastHTML app with updated DaisyUI 5 CDN and mapping dependencies
 app, rt = fast_app(
     hdrs=(
         # Updated to DaisyUI 5 with proper Tailwind CSS
@@ -354,6 +371,9 @@ app, rt = fast_app(
         # Then load DaisyUI
         Link(href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css", rel="stylesheet", type="text/css"),
         Script(src="https://unpkg.com/htmx.org@1.9.10"),
+        # Leaflet for maps
+        Link(rel="stylesheet", href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"),
+        Script(src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"),
         # Add custom theme styles
         Style("""
             :root {
@@ -388,6 +408,21 @@ app, rt = fast_app(
                 border: 2px solid var(--color-base-300);
                 box-shadow: 0 10px 25px rgba(0,0,0,0.1);
             }
+            
+            /* Debug panel */
+            .debug-panel {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                background: rgba(0,0,0,0.8);
+                color: white;
+                padding: 10px;
+                border-radius: 5px;
+                font-family: monospace;
+                font-size: 12px;
+                z-index: 9999;
+                max-width: 300px;
+            }
         """),
     )
 )
@@ -399,6 +434,8 @@ def homepage():
     
     # Check if Azure credentials are available
     azure_available = bool(os.environ.get("AZURE_OPENAI_API_KEY") and os.environ.get("AZURE_OPENAI_ENDPOINT"))
+    geoapify_api_key = os.environ.get("GEOAPIFY_API_KEY")
+    geoapify_available = bool(geoapify_api_key)
     
     # Create toggle switches for restoration options
     def create_toggle(name, label, checked=False):
@@ -442,17 +479,6 @@ def homepage():
             )
         )
     
-    # Restoration options panel (removed size dropdown)
-    restoration_options = Div(
-        H3("Restoration Options", cls="text-lg font-semibold mb-4 text-arch-blue"),
-        create_style_dropdown(),
-        create_toggle("preserve_heritage", "Preserve Heritage Elements"),
-        create_toggle("landscaping", "Add Landscaping & Greenery"),
-        create_toggle("lighting", "Enhance with Architectural Lighting"),
-        create_toggle("expand_building", "Consider Tasteful Expansion"),
-        cls="mb-6 p-4 bg-base-200 rounded-lg"
-    )
-    
     # Building image upload section
     upload_section = Div(
         Label("Upload Building Image", cls="block text-xl font-medium mb-2 text-arch-blue"),
@@ -488,12 +514,44 @@ def homepage():
         cls="mb-8"
     )
     
+    # Address section with debugging
+    address_section = Div(
+        Label("Building Address (Optional)", cls="block text-xl font-medium mb-2 text-arch-blue"),
+        P("Add the building's location to see it on a map in the results.", cls="mb-4"),
+        Input(
+            id="address-input",
+            type="text",
+            placeholder="Type address manually (autocomplete may load...)",
+            cls="input input-bordered w-full"
+        ),
+        Input(id="addr-lat", name="lat", type="hidden"),
+        Input(id="addr-lon", name="lon", type="hidden"),
+        Div(
+            P("Debug: Geoapify API available: " + str(geoapify_available), cls="text-xs text-base-content/50"),
+            id="debug-info",
+            cls="mt-2"
+        ),
+        cls="mb-8"
+    )
+    
+    # Restoration options panel
+    restoration_options = Div(
+        H3("Restoration Options", cls="text-lg font-semibold mb-4 text-arch-blue"),
+        create_style_dropdown(),
+        create_toggle("preserve_heritage", "Preserve Heritage Elements"),
+        create_toggle("landscaping", "Add Landscaping & Greenery"),
+        create_toggle("lighting", "Enhance with Architectural Lighting"),
+        create_toggle("expand_building", "Consider Tasteful Expansion"),
+        cls="mb-6 p-4 bg-base-200 rounded-lg"
+    )
+    
     # Control panel 
     control_panel = Div(
         H2("Building Restoration Visualizer", cls="text-xl font-bold mb-4 text-arch-blue"),
         P("✨ Enhanced with Azure OpenAI Image Editing + GPT-4 Analysis", cls="text-sm text-secondary mb-4"),
         api_status_alert,
         upload_section,
+        address_section,
         restoration_options,
         Button(
             "Generate Restoration",
@@ -557,13 +615,38 @@ def homepage():
         cls="w-full md:w-1/2 bg-base-100 p-6 rounded-lg shadow-lg custom-border border"
     )
     
-    # Add script for form handling
-    form_script = Script("""
-        document.addEventListener('DOMContentLoaded', function() {
+    # Add script for form handling with extensive debugging
+    form_script = Script(f"""
+        // Debug panel
+        function createDebugPanel() {{
+            const panel = document.createElement('div');
+            panel.className = 'debug-panel';
+            panel.id = 'debug-panel';
+            panel.innerHTML = '<strong>Debug Log:</strong><br>';
+            document.body.appendChild(panel);
+            return panel;
+        }}
+        
+        function debugLog(message) {{
+            console.log(message);
+            const panel = document.getElementById('debug-panel') || createDebugPanel();
+            panel.innerHTML += new Date().toLocaleTimeString() + ': ' + message + '<br>';
+            panel.scrollTop = panel.scrollHeight;
+        }}
+
+        document.addEventListener('DOMContentLoaded', function() {{
+            debugLog('🚀 DOM Content Loaded - Starting initialization');
+            
             // Form elements
             const imageInput = document.getElementById('image-input');
             const imagePreview = document.getElementById('image-preview');
             const restoreButton = document.getElementById('restore-button');
+            
+            // Address elements
+            const addrInput = document.getElementById('address-input');
+            const latHid = document.getElementById('addr-lat');
+            const lonHid = document.getElementById('addr-lon');
+            const debugInfo = document.getElementById('debug-info');
             
             // Results elements
             const loadingIndicator = document.getElementById('loading-indicator').parentElement;
@@ -572,56 +655,139 @@ def homepage():
             // State variables
             let originalImageData = null;
             
+            debugLog('📊 Elements found: ' + JSON.stringify({{
+                imageInput: !!imageInput,
+                addrInput: !!addrInput,
+                latHid: !!latHid,
+                lonHid: !!lonHid
+            }}));
+            
+            // Check for API key
+            const apikey = "{geoapify_api_key}";
+            debugLog('🔑 Geoapify API key length: ' + (apikey ? apikey.length : 0));
+            
+            // Initialize simple address input (no autocomplete for now - just manual entry)
+            if (addrInput) {{
+                addrInput.addEventListener('input', function() {{
+                    debugLog('📝 Address input: ' + this.value);
+                    if (debugInfo) {{
+                        debugInfo.innerHTML = `
+                            <p class="text-xs text-base-content/50">Current address: ${{this.value}}</p>
+                            <p class="text-xs text-base-content/50">Coordinates: ${{latHid.value || 'none'}}, ${{lonHid.value || 'none'}}</p>
+                        `;
+                    }}
+                }});
+                
+                // Simple geocoding button for testing
+                const geocodeBtn = document.createElement('button');
+                geocodeBtn.textContent = 'Geocode Address';
+                geocodeBtn.className = 'btn btn-sm btn-outline mt-2';
+                geocodeBtn.type = 'button';
+                geocodeBtn.onclick = async function() {{
+                    if (!apikey) {{
+                        debugLog('❌ No API key available for geocoding');
+                        alert('No Geoapify API key configured');
+                        return;
+                    }}
+                    
+                    if (!addrInput.value.trim()) {{
+                        debugLog('❌ No address entered');
+                        alert('Please enter an address first');
+                        return;
+                    }}
+                    
+                    debugLog('🌐 Attempting direct geocoding...');
+                    
+                    try {{
+                        const encodedAddress = encodeURIComponent(addrInput.value.trim());
+                        const url = `https://api.geoapify.com/v1/geocode/search?text=${{encodedAddress}}&apiKey=${{apikey}}`;
+                        
+                        debugLog('📡 Fetching: ' + url);
+                        
+                        const response = await fetch(url);
+                        const data = await response.json();
+                        
+                        debugLog('📊 Geocoding response: ' + JSON.stringify(data, null, 2));
+                        
+                        if (data.features && data.features.length > 0) {{
+                            const coords = data.features[0].geometry.coordinates;
+                            latHid.value = coords[1]; // latitude
+                            lonHid.value = coords[0]; // longitude
+                            
+                            debugLog('✅ Coordinates found: ' + coords[1] + ', ' + coords[0]);
+                            
+                            if (debugInfo) {{
+                                debugInfo.innerHTML = `
+                                    <p class="text-xs text-success">✅ Address geocoded successfully!</p>
+                                    <p class="text-xs text-base-content/50">Lat: ${{coords[1]}}, Lon: ${{coords[0]}}</p>
+                                `;
+                            }}
+                        }} else {{
+                            debugLog('❌ No coordinates found in response');
+                            alert('Address not found');
+                        }}
+                    }} catch (error) {{
+                        debugLog('❌ Geocoding error: ' + error.message);
+                        alert('Geocoding failed: ' + error.message);
+                    }}
+                }};
+                
+                addrInput.parentNode.appendChild(geocodeBtn);
+            }}
+            
             // Get options from the form
-            function getOptions() {
-                return {
+            function getOptions() {{
+                return {{
                     style: document.querySelector('select[name="style"]').value,
                     preserve_heritage: document.querySelector('input[name="preserve_heritage"]').checked,
                     landscaping: document.querySelector('input[name="landscaping"]').checked,
                     lighting: document.querySelector('input[name="lighting"]').checked,
                     expand_building: document.querySelector('input[name="expand_building"]').checked
-                };
-            }
+                }};
+            }}
             
             // Handle image upload
-            imageInput.addEventListener('change', function(event) {
+            imageInput.addEventListener('change', function(event) {{
                 const file = event.target.files[0];
                 
-                if (!file) {
+                if (!file) {{
                     resetForm();
                     return;
-                }
+                }}
+                
+                debugLog('📸 Image selected: ' + file.name + ' (' + file.size + ' bytes)');
                 
                 // Validate file type
-                if (!file.type.startsWith('image/')) {
+                if (!file.type.startsWith('image/')) {{
                     alert('Please select a valid image file.');
                     resetForm();
                     return;
-                }
+                }}
                 
                 // Validate file size (max 10MB)
-                if (file.size > 10 * 1024 * 1024) {
+                if (file.size > 10 * 1024 * 1024) {{
                     alert('Image size must be less than 10MB.');
                     resetForm();
                     return;
-                }
+                }}
                 
                 // Show preview
                 const reader = new FileReader();
-                reader.onload = function(e) {
+                reader.onload = function(e) {{
                     imagePreview.src = e.target.result;
                     imagePreview.classList.remove('hidden');
                     restoreButton.disabled = false;
                     
                     // Store the base64 data (remove the data URL prefix)
                     originalImageData = e.target.result.split(',')[1];
-                };
+                    debugLog('✅ Image loaded, base64 length: ' + originalImageData.length);
+                }};
                 
                 reader.readAsDataURL(file);
-            });
+            }});
             
             // Reset the form
-            function resetForm() {
+            function resetForm() {{
                 imageInput.value = '';
                 imagePreview.src = '';
                 imagePreview.classList.add('hidden');
@@ -631,14 +797,18 @@ def homepage():
                 // Reset results area
                 resultsPlaceholder.classList.remove('hidden');
                 loadingIndicator.classList.add('hidden');
-            }
+                
+                debugLog('🔄 Form reset');
+            }}
             
             // Handle restore button click
-            restoreButton.addEventListener('click', function() {
-                if (!originalImageData) {
+            restoreButton.addEventListener('click', function() {{
+                if (!originalImageData) {{
                     alert('Please upload an image first.');
                     return;
-                }
+                }}
+                
+                debugLog('🔄 Starting restoration process...');
                 
                 // Show loading state
                 loadingIndicator.classList.remove('hidden');
@@ -648,155 +818,105 @@ def homepage():
                 
                 // Get form options
                 const options = getOptions();
+                debugLog('⚙️ Options: ' + JSON.stringify(options));
+                
+                const requestData = {{
+                    image_data: originalImageData,
+                    options: options,
+                    address: addrInput.value,
+                    lat: latHid.value,
+                    lon: lonHid.value
+                }};
+                
+                debugLog('📡 Sending request with data: ' + JSON.stringify({{
+                    image_data_length: originalImageData.length,
+                    options: options,
+                    address: addrInput.value,
+                    coordinates: latHid.value + ', ' + lonHid.value
+                }}));
                 
                 // Send request to API
-                fetch('/restore', {
+                fetch('/restore', {{
                     method: 'POST',
-                    headers: {
+                    headers: {{
                         'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        image_data: originalImageData,
-                        options: options
-                    })
-                })
-                .then(response => response.json())
-                .then(data => {
+                    }},
+                    body: JSON.stringify(requestData)
+                }})
+                .then(response => {{
+                    debugLog('📡 Response received: ' + response.status);
+                    return response.json();
+                }})
+                .then(data => {{
+                    debugLog('📊 Response data: ' + JSON.stringify({{
+                        id: data.id,
+                        error: data.error,
+                        address: data.address,
+                        location: data.location
+                    }}));
+                    
                     // Hide loading indicator
                     loadingIndicator.classList.add('hidden');
                     restoreButton.disabled = false;
                     restoreButton.textContent = 'Generate Restoration';
                     
-                    if (data.error) {
+                    if (data.error) {{
                         // Show error message
                         showError(data.error, data.help);
                         return;
-                    }
+                    }}
                     
                     // Success - redirect to results page
-                    if (data.id) {
-                        window.location.href = `/results/${data.id}`;
-                    } else {
+                    if (data.id) {{
+                        debugLog('✅ Redirecting to results: ' + data.id);
+                        window.location.href = `/results/${{data.id}}`;
+                    }} else {{
                         showError('No result ID received from server');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error restoring image:', error);
+                    }}
+                }})
+                .catch(error => {{
+                    debugLog('❌ Request error: ' + error.message);
                     loadingIndicator.classList.add('hidden');
                     restoreButton.disabled = false;
                     restoreButton.textContent = 'Generate Restoration';
                     showError('Could not process your request. Please try again.');
-                });
-            });
+                }});
+            }});
             
             // Show error message
-            function showError(errorMessage, helpText) {
+            function showError(errorMessage, helpText) {{
+                debugLog('❌ Showing error: ' + errorMessage);
+                
                 let fullErrorMessage = `<div class="alert alert-error mb-4">
                     <div>
                         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
-                        <span>Error: ${errorMessage}</span>
+                        <span>Error: ${{errorMessage}}</span>
                     </div>
                 </div>`;
                 
-                if (helpText) {
+                if (helpText) {{
                     fullErrorMessage += `<div class="alert alert-info mb-4">
                         <div>
                             <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
-                            <span>${helpText}</span>
+                            <span>${{helpText}}</span>
                         </div>
                     </div>`;
-                    
-                    fullErrorMessage += `<div class="alert alert-warning">
-                        <div>
-                            <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16c-.77.833.192 2.5 1.732 2.5z" />
-                            </svg>
-                            <div>
-                                <strong>Troubleshooting:</strong>
-                                <ul class="list-disc list-inside mt-2 text-sm">
-                                    <li>Check your Azure OpenAI credentials</li>
-                                    <li>Verify your Azure OpenAI deployment supports image editing</li>
-                                    <li>Ensure your account has proper billing setup</li>
-                                    <li>Try a different image or smaller file size</li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>`;
-                }
+                }}
                 
                 // Show error in results area
                 resultsPlaceholder.innerHTML = fullErrorMessage;
                 resultsPlaceholder.classList.remove('hidden');
-            }
-            
-            // Set up drag and drop functionality
-            const dropzone = document.querySelector('label[for="image-input"]').parentElement;
-            
-            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                dropzone.addEventListener(eventName, function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                });
-            });
-            
-            // Visual feedback for drag and drop
-            ['dragenter', 'dragover'].forEach(eventName => {
-                dropzone.addEventListener(eventName, function() {
-                    dropzone.classList.add('border-primary', 'bg-primary/5');
-                });
-            });
-            
-            ['dragleave', 'drop'].forEach(eventName => {
-                dropzone.addEventListener(eventName, function() {
-                    dropzone.classList.remove('border-primary', 'bg-primary/5');
-                });
-            });
-            
-            // Handle file drop
-            dropzone.addEventListener('drop', function(e) {
-                const files = e.dataTransfer.files;
-                
-                if (files.length > 0) {
-                    const file = files[0];
-                    
-                    // Validate file type
-                    if (!file.type.startsWith('image/')) {
-                        alert('Please drop a valid image file.');
-                        return;
-                    }
-                    
-                    // Update file input
-                    const dataTransfer = new DataTransfer();
-                    dataTransfer.items.add(file);
-                    imageInput.files = dataTransfer.files;
-                    
-                    // Trigger change event
-                    const event = new Event('change');
-                    imageInput.dispatchEvent(event);
-                }
-            });
-            
-            // Add keyboard navigation
-            document.addEventListener('keydown', function(e) {
-                // Enter key on restore button
-                if (e.key === 'Enter' && document.activeElement === restoreButton) {
-                    e.preventDefault();
-                    restoreButton.click();
-                }
-                
-                // Escape key to reset form
-                if (e.key === 'Escape' && originalImageData) {
-                    resetForm();
-                }
-            });
+            }}
             
             // Initialize form state
             resetForm();
-        });
+            
+            debugLog('✅ Initialization complete');
+        }});
         """)
     
     return Title("Building Restoration Visualizer"), Main(
@@ -824,6 +944,15 @@ async def api_restore_building(request):
         data = await request.json()
         image_data = data.get("image_data", "")
         options = data.get("options", {})
+        address = data.get("address", "")
+        lat = data.get("lat", "")
+        lon = data.get("lon", "")
+        
+        print(f"📡 Received restoration request:")
+        print(f"   Image data: {len(image_data)} characters")
+        print(f"   Address: {address}")
+        print(f"   Coordinates: {lat}, {lon}")
+        print(f"   Options: {options}")
         
         if not image_data:
             return JSONResponse({"error": "No image data provided"}, status_code=400)
@@ -839,19 +968,23 @@ async def api_restore_building(request):
             }, status_code=401)
         
         # Call the restoration function
-        result = restore_building_image(image_data, options)
+        result = restore_building_image(image_data, options, address, lat, lon)
         
+        print(f"✅ Restoration complete, returning result with ID: {result.get('id', 'unknown')}")
         return JSONResponse(result)
             
     except Exception as e:
-        print(f"Error restoring image: {e}")
+        print(f"❌ Error restoring image: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 @rt("/results/{result_id}")
 def results_page(result_id: str):
     """Display restoration results on a dedicated page"""
     
+    print(f"📊 Loading results page for ID: {result_id}")
+    
     if result_id not in restoration_results:
+        print(f"❌ Result {result_id} not found in storage")
         return Title("Result Not Found"), Main(
             Div(
                 H1("Result Not Found", cls="text-2xl font-bold text-center mb-4"),
@@ -862,13 +995,34 @@ def results_page(result_id: str):
         )
     
     result = restoration_results[result_id]
+    print(f"✅ Found result: {result.keys()}")
+    
+    # Check if we have location data
+    location = result.get("location", {})
+    latitude = location.get("lat")
+    longitude = location.get("lon") 
+    has_location = (latitude is not None and longitude is not None and 
+                   latitude != "" and longitude != "")
+    
+    print(f"📍 Location data: lat={latitude}, lon={longitude}, has_location={has_location}")
+    
+    # Map section (only shown if we have location data)
+    map_section = ""
+    if has_location:
+        map_section = Div(
+            H2("Location", cls="text-xl font-bold text-center mb-4 text-arch-blue"),
+            Div(id="map", cls="w-full h-96 rounded-lg shadow-md"),
+            cls="mb-12"
+        )
+    
+    # Get environment variables for JavaScript
+    mapillary_token = os.environ.get("MAPILLARY_TOKEN")
     
     return Title("Restoration Results"), Main(
         Div(
             # Header
             Div(
                 H1("Building Restoration Results", cls="text-3xl font-bold text-center mb-2 text-arch-blue"),
-                # P(f"Style: {result['style']}", cls="text-center mb-4 text-lg"),
                 Div(
                     A("← Back to Home", href="/", cls="btn btn-outline btn-primary mr-4"),
                     Button("Download Result", cls="btn btn-accent", id="download-btn"),
@@ -891,12 +1045,16 @@ def results_page(result_id: str):
                 cls="mb-8"
             ),
             
+            # Map section
+            map_section,
+            
             # Details section
             Div(
                 Div(
                     H3("Restoration Details", cls="text-lg font-bold mb-4"),
                     Div(
                         P(f"Building Analysis: {result['azure_analysis']}", cls="mb-4"),
+                        (P(f"Address: {result['address']}", cls="mb-2") if result.get('address') else ""),
                         P(f"Generated: {result['created_at']}", cls="text-sm text-base-content/70"),
                         cls="bg-base-200 p-6 rounded-lg"
                     ),
@@ -908,14 +1066,37 @@ def results_page(result_id: str):
             cls="container mx-auto px-4 py-8"
         ),
         
-        # JavaScript for the comparison
+        # JavaScript for the comparison and map
         Script(f"""
+            console.log('🚀 Initializing results page...');
+            
+            // Debug panel for results page
+            function createDebugPanel() {{
+                const panel = document.createElement('div');
+                panel.className = 'debug-panel';
+                panel.id = 'debug-panel';
+                panel.innerHTML = '<strong>Results Debug:</strong><br>';
+                document.body.appendChild(panel);
+                return panel;
+            }}
+            
+            function debugLog(message) {{
+                console.log(message);
+                const panel = document.getElementById('debug-panel') || createDebugPanel();
+                panel.innerHTML += new Date().toLocaleTimeString() + ': ' + message + '<br>';
+                panel.scrollTop = panel.scrollHeight;
+            }}
+            
             document.addEventListener('DOMContentLoaded', () => {{
+            debugLog('🚀 Results page DOM loaded');
+            
             /* ------------------------------------------------------------------
                 Base-64 images supplied by FastHTML
                 ------------------------------------------------------------------ */
             const originalImage = '{result['original_image']}';
             const restoredImage = '{result['restored_image']}';
+            
+            debugLog('📊 Image data lengths - Original: ' + originalImage.length + ', Restored: ' + restoredImage.length);
 
             /* ------------------------------------------------------------------
                 Inject CSS for the clip-path slider
@@ -981,19 +1162,21 @@ def results_page(result_id: str):
             const styleTag = document.createElement('style');
             styleTag.textContent = css;
             document.head.appendChild(styleTag);
+            debugLog('✅ Comparison slider CSS injected');
 
             /* ------------------------------------------------------------------
                 Build the comparison-slider markup
                 ------------------------------------------------------------------ */
             const comparisonHTML = `
                 <div class="ba-slider" style="--pos:50%;">
-                <img src="data:image/jpeg;base64,${{originalImage}}" alt="Original">
-                <img src="data:image/jpeg;base64,${{restoredImage}}" class="img-front" alt="Restored">
+                <img src="data:image/jpeg;base64,${{originalImage}}" alt="Original" onload="console.log('Original image loaded')" onerror="console.error('Original image failed to load')">
+                <img src="data:image/jpeg;base64,${{restoredImage}}" class="img-front" alt="Restored" onload="console.log('Restored image loaded')" onerror="console.error('Restored image failed to load')">
                 <span class="handle" aria-label="Drag to compare"></span>
                 </div>
             `;
             const container = document.getElementById('comparison-container');
             container.innerHTML = comparisonHTML;
+            debugLog('✅ Comparison slider HTML created');
 
             /* ------------------------------------------------------------------
                 Slider interaction – update CSS variable  --pos
@@ -1010,8 +1193,10 @@ def results_page(result_id: str):
             /* Mouse events */
             handle.addEventListener('mousedown', e => {{
                 e.preventDefault();
+                debugLog('🖱️ Mouse drag started');
                 const move = m => setPos(m.clientX);
                 const up   = () => {{
+                debugLog('🖱️ Mouse drag ended');
                 document.removeEventListener('mousemove', move);
                 document.removeEventListener('mouseup',   up);
                 }};
@@ -1021,8 +1206,10 @@ def results_page(result_id: str):
 
             /* Touch events */
             handle.addEventListener('touchstart', () => {{
+                debugLog('👆 Touch drag started');
                 const move = t => setPos(t.touches[0].clientX);
                 const end  = () => {{
+                debugLog('👆 Touch drag ended');
                 document.removeEventListener('touchmove', move);
                 document.removeEventListener('touchend',  end);
                 }};
@@ -1030,17 +1217,116 @@ def results_page(result_id: str):
                 document.addEventListener('touchend',  end);
             }});
 
+            debugLog('✅ Image comparison slider initialized');
+
+            /* ------------------------------------------------------------------
+                Map initialization
+                ------------------------------------------------------------------ */
+            const lat = {latitude if latitude is not None else 'null'};
+            const lon = {longitude if longitude is not None else 'null'};
+            const address = "{result.get('address', '').replace('"', '\\"')}";
+            const mlyToken = "{mapillary_token}";
+            
+            debugLog('📍 Map data: lat=' + lat + ', lon=' + lon + ', address=' + address + ', hasToken=' + !!mlyToken);
+
+            if (lat !== null && lon !== null && !isNaN(lat) && !isNaN(lon) && document.getElementById('map')) {{
+                debugLog('🗺️ Initializing map...');
+                
+                try {{
+                    // Check if Leaflet is available
+                    if (typeof L === 'undefined') {{
+                        throw new Error('Leaflet library not loaded');
+                    }}
+                    
+                    const map = L.map('map', {{ 
+                        scrollWheelZoom: false,
+                        zoomControl: true
+                    }}).setView([lat, lon], 16);
+                    
+                    debugLog('✅ Map created, adding tiles...');
+
+                    // Add OpenStreetMap base layer
+                    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                       maxZoom: 19, 
+                       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    }}).addTo(map);
+                    
+                    debugLog('✅ Tiles added, creating marker...');
+
+                    // Add marker with popup
+                    const popupText = address || "Building Location";
+                    const marker = L.marker([lat, lon]).addTo(map)
+                     .bindPopup(popupText);
+                    
+                    // Open popup immediately
+                    marker.openPopup();
+                    
+                    debugLog('✅ Marker added and popup opened');
+
+                    // Ensure map renders properly
+                    setTimeout(() => {{
+                        map.invalidateSize();
+                        debugLog('🔄 Map size invalidated for proper rendering');
+                    }}, 100);
+                    
+                    debugLog('✅ Map initialization complete');
+                    
+                }} catch (error) {{
+                    debugLog('❌ Map initialization failed: ' + error.message);
+                    console.error('❌ Map initialization failed:', error);
+                    
+                    // Show a fallback message in the map container
+                    const mapContainer = document.getElementById('map');
+                    if (mapContainer) {{
+                        mapContainer.innerHTML = `
+                            <div class="flex items-center justify-center h-full bg-base-200 rounded-lg">
+                                <div class="text-center">
+                                    <p class="text-lg font-semibold mb-2">Map Unavailable</p>
+                                    <p class="text-sm text-base-content/70">Location: ${{address || 'Coordinates available'}}</p>
+                                    <p class="text-xs text-base-content/50">Lat: ${{lat}}, Lon: ${{lon}}</p>
+                                    <p class="text-xs text-error">Error: ${{error.message}}</p>
+                                </div>
+                            </div>
+                        `;
+                    }}
+                }}
+            }} else {{
+                debugLog('⚠️ Map not initialized - invalid data or missing container');
+                debugLog('   Coords valid: ' + (lat !== null && lon !== null && !isNaN(lat) && !isNaN(lon)));
+                debugLog('   Container exists: ' + !!document.getElementById('map'));
+                
+                // If we have a map container but no valid coordinates, show a message
+                const mapContainer = document.getElementById('map');
+                if (mapContainer) {{
+                    mapContainer.innerHTML = `
+                        <div class="flex items-center justify-center h-full bg-base-200 rounded-lg">
+                            <div class="text-center">
+                                <p class="text-lg font-semibold mb-2">No Location Data</p>
+                                <p class="text-sm text-base-content/70">Add an address when uploading to see the location on a map</p>
+                                <p class="text-xs text-base-content/50">Debug: lat=${{lat}}, lon=${{lon}}</p>
+                            </div>
+                        </div>
+                    `;
+                }}
+            }}
+
             /* ------------------------------------------------------------------
                 Download restored image
                 ------------------------------------------------------------------ */
-            document.getElementById('download-btn').addEventListener('click', () => {{
-                const link = document.createElement('a');
-                link.href = 'data:image/jpeg;base64,' + restoredImage;
-                link.download = 'restored_building.jpg';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            }});
+            const downloadBtn = document.getElementById('download-btn');
+            if (downloadBtn) {{
+                downloadBtn.addEventListener('click', () => {{
+                    const link = document.createElement('a');
+                    link.href = 'data:image/jpeg;base64,' + restoredImage;
+                    link.download = 'restored_building.jpg';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    debugLog('📥 Download initiated');
+                }});
+            }}
+            
+            debugLog('✅ Results page initialization complete');
             }});
             """),
 
@@ -1051,7 +1337,21 @@ def results_page(result_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Building Restoration Visualizer with Azure OpenAI...")
+    print("🚀 Starting Building Restoration Visualizer with Azure OpenAI + Address Mapping...")
     print(f"📊 In-memory storage initialized")
     print(f"🔑 Azure OpenAI: {'✅' if (os.environ.get('AZURE_OPENAI_API_KEY') and os.environ.get('AZURE_OPENAI_ENDPOINT')) else '❌'}")
+    print(f"🗺️ Geoapify: {'✅' if os.environ.get('GEOAPIFY_API_KEY') else '❌'}")
+    print(f"📷 Mapillary: {'✅' if os.environ.get('MAPILLARY_TOKEN') else '❌'}")
+    
+    # Show partial keys for debugging (but keep them secure)
+    if os.environ.get('GEOAPIFY_API_KEY'):
+        key = os.environ.get('GEOAPIFY_API_KEY')
+        print(f"   Geoapify key: {key[:8]}...{key[-4:] if len(key) > 12 else '****'}")
+    
+    if os.environ.get('MAPILLARY_TOKEN'):
+        token = os.environ.get('MAPILLARY_TOKEN')
+        print(f"   Mapillary token: {token[:8]}...{token[-4:] if len(token) > 12 else '****'}")
+    
+    print(f"🌐 Starting server on http://127.0.0.1:8002")
+    print(f"📱 Test address manually or click 'Geocode Address' button")
     uvicorn.run(app, host="0.0.0.0", port=8002)
