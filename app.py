@@ -151,24 +151,33 @@ def generate_restoration_description_with_azure(prompt: str, building_analysis: 
 
 # Function to create a restoration using Azure OpenAI image editing
 def create_restoration_mockup(original_image_data: str, description: str) -> str:
-    try:
-        # Get Azure OpenAI credentials
-        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-        deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-image-1")
-        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
-        
-        if not endpoint or not api_key:
-            print("⚠️ Azure OpenAI image credentials missing")
-            return original_image_data
-            
-        # Construct the image editing URL
-        if not endpoint.endswith("/"):
-            endpoint += "/"
-        url = f"{endpoint}openai/deployments/{deployment}/images/edits?api-version={api_version}"
-        
-        # Enhanced restoration prompt for better perspective and photorealism
-        prompt = f"""Transform this derelict building into a beautifully restored version while maintaining EXACTLY the same camera angle, perspective, and viewpoint as the original photo.
+    """
+    Send an image-edit request to Azure OpenAI.
+    If the request is blocked by the moderation system (HTTP 400 + code=moderation_blocked)
+    we wait two seconds and retry exactly once.  Any other failure—or a second block—
+    falls back to the original image data so the app keeps working.
+    """
+    # ------------------------------------------------------------------
+    # 1. Gather Azure config
+    # ------------------------------------------------------------------
+    endpoint   = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    api_key    = os.environ.get("AZURE_OPENAI_API_KEY")
+    deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-image-1")
+    api_ver    = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+
+    if not endpoint or not api_key:
+        print("⚠️  Azure OpenAI image credentials missing")
+        return original_image_data
+
+    if not endpoint.endswith("/"):
+        endpoint += "/"
+    url = f"{endpoint}openai/deployments/{deployment}/images/edits?api-version={api_ver}"
+
+    # ------------------------------------------------------------------
+    # 2. Build prompt & payload
+    # ------------------------------------------------------------------
+    prompt = f"""Transform this derelict building into a beautifully restored version
+while maintaining EXACTLY the same camera angle, perspective, and viewpoint.
 
 CRITICAL REQUIREMENTS:
 - Keep the EXACT same perspective, camera angle, and viewpoint
@@ -177,62 +186,84 @@ CRITICAL REQUIREMENTS:
 - Create photorealistic results that look like professional architectural photography
 
 RESTORATION IMPROVEMENTS:
-- Clean and repair all damaged brickwork, concrete, or exterior materials
-- Replace broken or boarded windows with new, clean glass windows
-- Add fresh paint or protective coatings to all surfaces
-- Repair and modernize the roof if visible
-- Clean up debris and make surroundings neat and well-maintained
-- Add subtle modern lighting fixtures that complement the architecture
-- Include tasteful landscaping with plants, trees, or greenery where appropriate
+- Clean and repair all damaged materials
+- Replace broken or boarded windows with new glass
+- Fresh paint or protective coatings to façades
+- Repair and modernize any visible roof elements
+- Clean surroundings and add tasteful landscaping
+- Subtle modern lighting fixtures highlighting architecture
 
 STYLE SPECIFICATIONS: {description}
 
 OUTPUT REQUIREMENTS:
 - Professional architectural photography quality
 - Sharp, high-definition details
-- Natural lighting that matches the original photo's lighting conditions
+- Natural lighting matching the original photo
 - Realistic materials and textures
-- Clean, finished appearance suitable for real estate or architectural portfolio"""
-        
-        # Decode base64 image data
-        image_bytes = base64.b64decode(original_image_data)
-        
-        # Prepare the multipart form data with enhanced parameters
-        files = {
-            "image": ("building.png", image_bytes, "image/png")
-        }
-        data = {
-            "prompt": prompt,
-            "model": deployment,
-            "size": "auto",  # Use auto size for best results
-            "quality": "medium",
-            "n": 1
-        }
-        headers = {
-            "api-key": api_key
-        }
-        
-        print("🎨 Sending image to Azure OpenAI for high-quality restoration...")
-        response = requests.post(url, headers=headers, files=files, data=data, timeout=90)
-        
-        if response.status_code == 200:
-            result_data = response.json()
-            if "data" in result_data and len(result_data["data"]) > 0:
-                restored_b64 = result_data["data"][0]["b64_json"]
-                print("✅ High-quality image restoration completed successfully")
-                return restored_b64
-            else:
-                print("⚠️ No image data in response")
-                return original_image_data
-        else:
-            print(f"❌ Azure OpenAI image editing failed: {response.status_code}")
-            if response.text:
-                print(f"Error details: {response.text}")
-            return original_image_data
-            
-    except Exception as e:
-        print(f"⚠️ Error in create_restoration_mockup: {e}")
-        return original_image_data
+- Finished appearance suitable for a design portfolio
+"""
+
+    image_bytes = base64.b64decode(original_image_data)
+
+    files = {
+        "image": ("building.png", image_bytes, "image/png")
+    }
+    data = {
+        "prompt": prompt,
+        "model": deployment,
+        "size": "auto",
+        "quality": "medium",
+        "n": 1
+    }
+    headers = {
+        "api-key": api_key
+    }
+
+    # ------------------------------------------------------------------
+    # 3. Helper: post once
+    # ------------------------------------------------------------------
+    def _post_once():
+        try:
+            resp = requests.post(url, headers=headers, files=files, data=data, timeout=90)
+        except Exception as e:
+            return False, f"request_error: {e}"
+
+        if resp.status_code == 200:
+            payload = resp.json()
+            if payload.get("data"):
+                return True, payload["data"][0]["b64_json"]
+            return False, "no_data_key"
+        return False, resp.text  # includes error JSON for 4xx
+
+    # ------------------------------------------------------------------
+    # 4. First attempt
+    # ------------------------------------------------------------------
+    success, result = _post_once()
+
+    # ------------------------------------------------------------------
+    # 5. One retry if moderation blocked
+    # ------------------------------------------------------------------
+    if not success:
+        err_code = None
+        try:
+            err_code = json.loads(result).get("error", {}).get("code")
+        except Exception:
+            pass
+
+        if err_code == "moderation_blocked":
+            print("🔁 Moderation blocked – waiting 2 s and retrying once …")
+            time.sleep(2)
+            success, result = _post_once()
+
+    # ------------------------------------------------------------------
+    # 6. Return / fallback
+    # ------------------------------------------------------------------
+    if success and result:
+        print("✅ High-quality image restoration completed")
+        return result
+
+    print(f"❌ Azure image editing failed after retry. Last response: {result}")
+    return original_image_data
 
 
 # Master function to orchestrate restoration
